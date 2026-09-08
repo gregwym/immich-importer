@@ -44,7 +44,9 @@ def merge(previous, key, owner_id, server_url, members):
                     "assetId": item.asset_id, "visibility": item.route}
         old = roles.get(item.role, {})
         for field, content in incoming.items():
-            if old.get(field) is not None and content is not None and old[field] != content:
+            # Visibility is routing policy (it changes when an LRV proxy is
+            # removed later), not identity; the server copy is repaired instead.
+            if field != "visibility" and old.get(field) is not None and content is not None and old[field] != content:
                 raise ImportFailure("MANIFEST CONFLICT: " + key + " / " + item.role + " / " + field)
             if content is not None:
                 old[field] = content

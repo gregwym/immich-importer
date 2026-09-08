@@ -18,6 +18,11 @@ def capture_date(day, clock):
     return datetime.strptime(day + clock, "%Y%m%d%H%M%S").date().isoformat()
 
 
+def hidden_directory(name):
+    """DSM metadata directories (@eaDir, @Recycle) and dot directories are never camera media."""
+    return name.startswith(("@", "."))
+
+
 def classify(path, relative):
     item = Item(path, relative, "unknown", "Unrecognized file; needs review")
     # Only explicitly recognized thumbnail image types inside a Thumb directory.
@@ -40,12 +45,16 @@ def classify(path, relative):
         item.date = capture_date(day, clock)
         item.expected = dict(ONERS)
         if extension == "mp4":
-            # Known ONE RS ordinary video layout only; future channels need review.
-            if (prefix, channel) not in (("VID", "00"), ("LRV", "01")):
-                return item
-            item.route = "timeline" if prefix == "VID" else "ignored"
-            item.reason = "Insta360 4K Boost" if prefix == "VID" else "Insta360 normal MP4 LRV"
-            item.expected["lensModel"] = "4K Boost Lens"
+            # Known ONE RS flat video layouts only; future channels need review.
+            if (prefix, channel) in (("VID", "00"), ("LRV", "01")):
+                item.route = "timeline" if prefix == "VID" else "ignored"
+                item.reason = "Insta360 4K Boost" if prefix == "VID" else "Insta360 normal MP4 LRV"
+                item.expected["lensModel"] = "4K Boost Lens"
+            elif (prefix, channel) in (("VID", "10"), ("LRV", "11")):
+                # Single-lens (steady cam) MP4 from the 360 lens; the lens is
+                # confirmed from metadata rather than guessed from the filename.
+                item.route = "timeline" if prefix == "VID" else "ignored"
+                item.reason = "Insta360 single-lens MP4" if prefix == "VID" else "Insta360 single-lens MP4 LRV"
         elif (prefix, channel) in (("VID", "00"), ("VID", "10"), ("LRV", "11")):
             item.route = "timeline" if prefix == "LRV" else "archive"
             item.reason = "Insta360 360 bundle"
@@ -75,6 +84,9 @@ def scan(source):
             try:
                 st = entry.stat(follow_symlinks=False)
                 if stat.S_ISDIR(st.st_mode):
+                    if hidden_directory(entry.name):
+                        plan.skipped.append(relative)
+                        continue
                     visit(path)
                 elif stat.S_ISREG(st.st_mode):
                     try:
@@ -124,6 +136,14 @@ def scan(source):
                     "master-10": f"VID_{day}_{clock}_10_{seq}.insv",
                     "lrv-11": f"LRV_{day}_{clock}_11_{seq}.insv"}
         missing = [name for role, name in expected.items() if role not in roles]
+        if "lrv-11" not in roles:
+            # The LRV proxy is derivable from the masters, so its absence loses
+            # nothing; without it the front master becomes the timeline entry.
+            plan.lrv_missing.append(key)
+            for member in members:
+                if member.role == "master-00":
+                    member.route, member.reason = "timeline", "Insta360 360 bundle (no LRV; master shown in timeline)"
+            missing = [name for name in missing if not name.startswith("LRV_")]
         if missing:
             plan.incomplete[key] = missing
         if len(roles) != len(set(roles)):

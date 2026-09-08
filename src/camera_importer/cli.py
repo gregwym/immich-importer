@@ -44,12 +44,18 @@ def display(report):
             print("\n" + route + ": " + (", ".join(k + "=" + str(v) for k, v in counts.items()) or "0"))
         print("\nCamera metadata: " + json.dumps(report["cameraMetadata"]))
         print("360 bundles: complete=" + str(report["bundles"]["complete"]) +
+              ", lrvMissing=" + str(len(report["bundles"]["lrvMissing"])) +
               ", incomplete=" + str(len(report["bundles"]["incomplete"])))
+        for key in report["bundles"]["lrvMissing"]:
+            print("  NO LRV (master-00 in timeline): " + key)
         for key, missing in report["bundles"]["incomplete"].items():
             print("  INCOMPLETE 360 BUNDLE: " + key)
             for name in missing:
                 print("    Missing: " + name)
         print("Ignored: " + json.dumps(report["ignored"]))
+        print("Skipped hidden directories: " + str(len(report["skippedDirectories"])))
+        for path in report["skippedDirectories"]:
+            print("  SKIPPED: " + path)
         print("Unknown: " + str(len(report["unknown"])))
         for path in report["unknown"]:
             print("  UNKNOWN FILE: " + path)

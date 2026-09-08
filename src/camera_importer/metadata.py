@@ -45,6 +45,15 @@ def confirm_camera(tags, expected):
         raise ImportFailure("Camera metadata conflicts with filename classification")
 
 
+def detect_lens(tags):
+    """Return the ONE RS lens named by the metadata, or None. Never guessed from a filename."""
+    values = {str(tags.get(k, "")) for k in ("LensID", "LensType", "LensSpec", "LensModel", "Lens")}
+    lenses = values & {"4K Boost Lens", "5.7K 360 Lens"}
+    if len(lenses) > 1:
+        raise ImportFailure("NEEDS REVIEW: conflicting lens metadata")
+    return lenses.pop() if lenses else None
+
+
 def identify_photo(item, tags):
     model = normalize(tags.get("Model", ""))
     if model in ("insta360oners", "oners"):
@@ -57,13 +66,9 @@ def identify_photo(item, tags):
     if tags.get("FileType") not in ("JPEG", "DNG") or int(tags.get("NumberOfImages", 1)) > 1:
         raise ImportFailure("NEEDS REVIEW: photo is not a confirmed independent JPEG/DNG")
     if expected == ONERS:
-        # Never infer a lens from the extension alone.
-        values = {str(tags.get(k, "")) for k in ("LensID", "LensType", "LensSpec", "LensModel", "Lens")}
-        lenses = values & {"4K Boost Lens", "5.7K 360 Lens"}
-        if len(lenses) > 1:
-            raise ImportFailure("NEEDS REVIEW: conflicting photo lens metadata")
-        if lenses:
-            expected["lensModel"] = lenses.pop()
+        lens = detect_lens(tags)
+        if lens:
+            expected["lensModel"] = lens
     item.expected, item.route, item.reason = expected, "timeline", "Metadata-confirmed camera photo"
 
 
@@ -119,6 +124,11 @@ def prepare_metadata(item, executable="exiftool"):
         identify_photo(item, tags)
     else:
         confirm_camera(tags, {k: v for k, v in item.expected.items() if k != "lensModel"})
+        if item.expected.get("make") == ONERS["make"] and "lensModel" not in item.expected:
+            # Filename layouts shared by several lenses keep the lens the camera wrote.
+            lens = detect_lens(tags)
+            if lens:
+                item.expected["lensModel"] = lens
     if "lensModel" in item.expected:
         higher = next((tags[k] for k in ("LensID", "LensType", "LensSpec") if tags.get(k) is not None), None)
         if higher is not None and higher != item.expected["lensModel"]:

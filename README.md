@@ -100,14 +100,19 @@ immich server-info
 | Pocket 3 `DJI_...LRF` | 明确忽略，源文件保留 | — |
 | ONE RS `VID_..._00_....mp4` | Immich timeline | Insta360 / Insta360 OneRS / 4K Boost Lens |
 | ONE RS `LRV_..._01_....mp4` | 明确忽略，源文件保留 | — |
-| ONE RS `VID_..._00_....insv` | Immich archive | Insta360 / Insta360 OneRS / 5.7K 360 Lens |
+| ONE RS `VID_..._10_....mp4`（360 镜头单镜头模式） | Immich timeline | Insta360 / Insta360 OneRS；镜头由 metadata 确认，不猜 |
+| ONE RS `LRV_..._11_....mp4` | 明确忽略，源文件保留 | — |
+| ONE RS `VID_..._00_....insv` | Immich archive；bundle 缺少 LRV 时改为 timeline | Insta360 / Insta360 OneRS / 5.7K 360 Lens |
 | ONE RS `VID_..._10_....insv` | Immich archive | 同上 |
 | ONE RS `LRV_..._11_....insv` | Immich timeline | 同上 |
 | 明确可独立保存的 INSP / JPEG / DNG | Immich timeline | 必须由 metadata 确认机型；不猜镜头 |
 | `Thumb/` 内 JPG/JPEG/PNG/BMP/THM | 明确忽略，源文件保留 | 不把任意 Thumb 子文件都当缓存 |
+| `@` 或 `.` 开头的目录（DSM `@eaDir`、`@Recycle`、`.hidden`） | 整个目录跳过，不进入、不分类 | 报告中列为 skipped |
 | 其他文件、symlink、特殊文件 | UNKNOWN / NEEDS REVIEW | 最终失败，保留源文件 |
 
-文件名不匹配已知规则、未来的新 channel、空文件、无效日期、疑似多文件照片都会要求检查。通用 `DJI_...` 命名以本项目的 Pocket 3 输入范围解释；若 metadata 明确显示其他 DJI 机型，则报冲突。照片中的其他相机型号不会被改成 ONE RS。
+文件名不匹配已知规则、未来的新 channel、空文件、无效日期、疑似多文件照片都会要求检查。
+
+**360 bundle 缺少 LRV：** 一个 bundle 由 `VID_..._00`、`VID_..._10` 两个 master 和 `LRV_..._11` 代理组成。LRV 可由 master 重新生成，删除它不丢失任何原始数据，因此只缺 LRV 的 bundle 不算 incomplete：`VID_..._00_....insv` 改为进入 timeline，作为这段视频的可见条目，`VID_..._10` 仍进入 archive。报告中以 `lrvMissing` 列出这些 bundle。缺少任一 master 仍是 INCOMPLETE 360 BUNDLE 并导致非零退出。之前按 archive 导入的 master，在 LRV 删除后重新运行会把已有 asset 的 visibility 修正为 timeline，manifest 只记录当前 visibility，不视为冲突。通用 `DJI_...` 命名以本项目的 Pocket 3 输入范围解释；若 metadata 明确显示其他 DJI 机型，则报冲突。照片中的其他相机型号不会被改成 ONE RS。
 
 支持 INSV 入库不代表支持拼接，也不保证 raw 双鱼眼视频能作为正常全景播放；master 的原字节仍由 Immich 管理。
 
@@ -189,7 +194,7 @@ immich server-info
 - Manifest 记录 bundle key、role、原 filename、size、SHA-256、Immich checksum、asset ID、owner 和服务器身份。锁定后检查旧记录，合并缺失信息，再原子写入；冲突保留原文件并失败。
 - 允许保存不完整 bundle 的部分进度，但不会把它算作安全完成。重复运行能补齐缺失成员的 asset ID。
 - 网络中断后直接重复执行同一命令即可通过 checksum 找到已有资源；不依赖上次报告决定跳过验证。
-- 默认已知素材继续处理，但 unknown、不完整 bundle 或任何错误仍导致最终非零退出。
+- 默认已知素材继续处理，但 unknown、不完整 bundle（缺少 master）或任何错误仍导致最终非零退出。
 - 正常运行结束重新检查源文件状态及目录清单。发现新文件、文件变化或扫描失败，不能给出成功结论。
 - 输出目录不能和 source 重叠，拒绝 symlink 输出目录，禁止配置到 `/volume1/immich/media` 内。其他部署的 managed storage 也不能用作输出根目录。
 

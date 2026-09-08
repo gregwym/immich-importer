@@ -43,8 +43,10 @@ class Plan:
     source: Path
     items: List[Item] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    skipped: List[str] = field(default_factory=list)
     bundles: Dict[str, List[Item]] = field(default_factory=dict)
     incomplete: Dict[str, List[str]] = field(default_factory=dict)
+    lrv_missing: List[str] = field(default_factory=list)
 
     @property
     def assets(self):

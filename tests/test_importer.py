@@ -194,7 +194,57 @@ class FilesTest(Workspace):
     def test_missing_bundle(self):
         self.put(TRIO[0])
         plan = scan(self.source)
-        self.assertEqual(set(plan.incomplete[KEY]), set(TRIO[1:]))
+        self.assertEqual(plan.incomplete[KEY], [TRIO[1]])
+        self.assertEqual(plan.lrv_missing, [KEY])
+
+    def test_bundle_without_lrv_shows_master_in_timeline(self):
+        self.put(TRIO[0])
+        self.put(TRIO[1])
+        plan = scan(self.source)
+        routes = {i.path.name: i.route for i in plan.items}
+        self.assertEqual(routes, {TRIO[0]: "timeline", TRIO[1]: "archive"})
+        self.assertFalse(plan.incomplete)
+        self.assertEqual(plan.lrv_missing, [KEY])
+        self.assertEqual(len(plan.bundles[KEY]), 2)
+        for name in TRIO:
+            self.put(name)
+        plan = scan(self.source)
+        self.assertEqual({i.path.name: i.route for i in plan.items}, dict(zip(TRIO, ["archive", "archive", "timeline"])))
+        self.assertFalse(plan.lrv_missing)
+
+    def test_hidden_directories_are_skipped(self):
+        self.put("DJI_20251226075842_0001_D.MP4")
+        self.put("@eaDir/DJI_20251226075842_0001_D.MP4/SYNOPHOTO_THUMB_M.jpg")
+        self.put("@eaDir/DJI_20251226075842_0001_D.MP4@SynoResource")
+        self.put("sub/@eaDir/anything.bin")
+        self.put(".hidden/anything.bin")
+        self.put("sub/DJI_20251226075842_0002_D.MP4")
+        plan = scan(self.source)
+        self.assertEqual([i.relative for i in plan.items], ["DJI_20251226075842_0001_D.MP4", "sub/DJI_20251226075842_0002_D.MP4"])
+        self.assertFalse(plan.unknown)
+        self.assertEqual(plan.skipped, [".hidden", "@eaDir", "sub/@eaDir"])
+
+    def test_single_lens_mp4_keeps_metadata_lens(self):
+        self.put("VID_20220404_231807_10_001.mp4")
+        self.put("LRV_20220404_231807_11_001.mp4")
+        plan = scan(self.source)
+        routes = {i.path.name: i.route for i in plan.items}
+        self.assertEqual(routes, {"VID_20220404_231807_10_001.mp4": "timeline", "LRV_20220404_231807_11_001.mp4": "ignored"})
+        self.assertFalse(plan.bundles)
+        item = plan.assets[0]
+        self.assertEqual(item.expected, ONERS)
+        with patch("camera_importer.metadata.probe", return_value={"Make": "Insta360", "Model": "Insta360 OneRS", "LensModel": "5.7K 360 Lens"}):
+            prepare_metadata(item)
+        self.assertEqual(item.expected, dict(ONERS, lensModel="5.7K 360 Lens"))
+        self.assertIsNone(item.xmp)
+        item = scan(self.source).assets[0]
+        with patch("camera_importer.metadata.probe", return_value={"Make": "Insta360", "Model": "Insta360 OneRS", "LensModel": "Other"}):
+            prepare_metadata(item)
+        self.assertEqual(item.expected, ONERS)
+        item = scan(self.source).assets[0]
+        with patch("camera_importer.metadata.probe", return_value={"Make": "GoPro", "Model": "HERO"}):
+            with self.assertRaisesRegex(ImportFailure, "conflicts"):
+                prepare_metadata(item)
 
     def test_duplicate_bundle_roles_fail(self):
         self.put("a/" + TRIO[0])
@@ -311,6 +361,16 @@ class FilesTest(Workspace):
         with self.assertRaisesRegex(ImportFailure, "MANIFEST CONFLICT"):
             manifest.merge(merged, KEY, OWNER, "http://localhost/api", [item])
 
+    def test_manifest_visibility_follows_current_route(self):
+        self.put(TRIO[0])
+        item = scan(self.source).items[0]
+        item.sha1, item.sha256 = hashes(item.path)
+        self.assertEqual(item.route, "timeline")
+        value = manifest.merge(None, KEY, OWNER, "http://localhost/api", [item])
+        item.route = "archive"
+        merged = manifest.merge(value, KEY, OWNER, "http://localhost/api", [item])
+        self.assertEqual(merged["members"][0]["visibility"], "archive")
+
 
 class IntegrationTest(Workspace):
     def setUp(self):
@@ -392,6 +452,23 @@ class IntegrationTest(Workspace):
             report = self.run_import()
         self.assertEqual(report["exitCode"], 0, report["errors"])
         self.assertGreater(len(sizes), 1)
+
+    def test_lrv_removed_after_import_moves_master_to_timeline(self):
+        for name in TRIO:
+            self.put(name)
+        self.assertEqual(self.run_import()["exitCode"], 0)
+        assets = {a["info"]["originalFileName"]: a["info"] for a in self.server.assets.values()}
+        self.assertEqual(assets[TRIO[0]]["visibility"], "archive")
+        (self.source / TRIO[2]).unlink()
+        report = self.run_import()
+        self.assertEqual(report["exitCode"], 0, report["errors"])
+        self.assertEqual(report["bundles"], {"complete": 0, "lrvMissing": [KEY], "incomplete": {}, "manifestsWrittenOrVerified": 1})
+        self.assertEqual(assets[TRIO[0]]["visibility"], "timeline")
+        self.assertEqual(assets[TRIO[1]]["visibility"], "archive")
+        self.assertEqual(len(self.server.uploads), 3)
+        members = {m["role"]: m for m in json.loads((self.config.manifest_root / "insta360" / (KEY + ".json")).read_text())["members"]}
+        self.assertEqual(members["master-00"]["visibility"], "timeline")
+        self.assertEqual(members["lrv-11"]["visibility"], "timeline")
 
     def test_rerun_fills_missing_manifest_asset_id(self):
         for name in TRIO:

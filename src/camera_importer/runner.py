@@ -61,9 +61,11 @@ def summarize(plan, dry_run, metadata_verify, manifests=0):
             "cameraMetadata": {"verified": sum(i.verified for i in plan.assets),
                                "failed": sum(i.status == "failed" for i in plan.assets),
                                "xmpPrepared": sum(i.xmp is not None for i in plan.assets)},
-            "bundles": {"complete": len(plan.bundles) - len(plan.incomplete),
-                        "incomplete": plan.incomplete, "manifestsWrittenOrVerified": manifests},
+            "bundles": {"complete": len(plan.bundles) - len(set(plan.incomplete) | set(plan.lrv_missing)),
+                        "lrvMissing": list(plan.lrv_missing), "incomplete": plan.incomplete,
+                        "manifestsWrittenOrVerified": manifests},
             "ignored": dict(Counter(i.reason for i in plan.items if i.route == "ignored")),
+            "skippedDirectories": list(plan.skipped),
             "unknown": [i.relative for i in plan.unknown], "errors": errors,
             "items": [i.public() for i in plan.items]}
 
