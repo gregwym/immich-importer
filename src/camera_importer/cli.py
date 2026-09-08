@@ -1,0 +1,86 @@
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from . import __version__
+from .config import load_config
+from .model import ImportFailure
+from .runner import execute
+
+
+def parser():
+    p = argparse.ArgumentParser(description="Read-only DJI Pocket 3 / Insta360 ONE RS import into Immich 3.1.0")
+    p.add_argument("path", nargs="?", default=".")
+    p.add_argument("--version", action="version", version=__version__)
+    p.add_argument("--dry-run", action="store_true", help="Plan locally; no API calls or persistent writes")
+    p.add_argument("--verbose", action="store_true", help="Diagnostic progress on stderr; never log credentials")
+    p.add_argument("--json", action="store_true", help="Exactly one JSON report on stdout")
+    p.add_argument("--strict", action="store_true", help="Abort before writes when planning finds any issue")
+    p.add_argument("--no-metadata-verify", action="store_true", help="Debug only; always produces a non-success safety result")
+    p.add_argument("--config", help="Configuration JSON (default ~/.config/camera-import/config.json)")
+    p.add_argument("--companion-root")
+    p.add_argument("--manifest-root")
+    p.add_argument("--api-url")
+    p.add_argument("--auth-dir", help="Directory containing Immich CLI auth.yml")
+    p.add_argument("--verify-timeout", type=float, help="Metadata polling timeout per asset in seconds")
+    return p
+
+
+def display(report):
+    print("Camera Import Summary\n=====================")
+    print("Source: " + report.get("source", ""))
+    if "items" in report:
+        if report.get("dryRun"):
+            for route, label in (("timeline", "IMMICH / TIMELINE"), ("archive", "IMMICH / ARCHIVE"),
+                                 ("companion", "COMPANION ARCHIVE"), ("ignored", "IGNORED"), ("sidecar", "SOURCE XMP")):
+                print("\n" + label + ":")
+                for item in report["items"]:
+                    if item["route"] == route:
+                        print("  + " + item["path"])
+                        if item["expectedMetadata"] and route in ("timeline", "archive"):
+                            print("    " + json.dumps(item["expectedMetadata"], ensure_ascii=False))
+        for route, counts in report["counts"].items():
+            print("\n" + route + ": " + (", ".join(k + "=" + str(v) for k, v in counts.items()) or "0"))
+        print("\nCamera metadata: " + json.dumps(report["cameraMetadata"]))
+        print("360 bundles: complete=" + str(report["bundles"]["complete"]) +
+              ", incomplete=" + str(len(report["bundles"]["incomplete"])))
+        for key, missing in report["bundles"]["incomplete"].items():
+            print("  INCOMPLETE 360 BUNDLE: " + key)
+            for name in missing:
+                print("    Missing: " + name)
+        print("Ignored: " + json.dumps(report["ignored"]))
+        print("Unknown: " + str(len(report["unknown"])))
+        for path in report["unknown"]:
+            print("  UNKNOWN FILE: " + path)
+    for error in report.get("errors", []):
+        print("ERROR: " + error)
+    print("\nRESULT: " + report["result"])
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        source = Path(args.path).expanduser().resolve(strict=True)
+        if not source.is_dir():
+            raise ImportFailure("Source must be a directory")
+        config = load_config(args)
+        log = (lambda message: print(message, file=sys.stderr, flush=True)) if args.verbose else (lambda message: None)
+        report = execute(source, config, args.dry_run, args.strict, not args.no_metadata_verify, log)
+    except KeyboardInterrupt:
+        report = {"result": "NOT SAFE TO FORMAT SOURCE", "exitCode": 130, "errors": ["Interrupted; rerun to verify partial progress"]}
+    except (ImportFailure, OSError) as error:
+        report = {"result": "NOT SAFE TO FORMAT SOURCE", "exitCode": 1, "errors": [str(error)]}
+    except Exception as error:
+        # Never leak requests/YAML exception content or auth through a traceback.
+        report = {"result": "NOT SAFE TO FORMAT SOURCE", "exitCode": 1,
+                  "errors": ["Unexpected failure (" + type(error).__name__ + "); no safety conclusion"]}
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        display(report)
+    return report["exitCode"]
+
+
+if __name__ == "__main__":
+    sys.exit(main())
