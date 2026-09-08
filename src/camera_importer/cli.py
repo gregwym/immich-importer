@@ -56,6 +56,7 @@ def display(report):
         for route, counts in report["counts"].items():
             print("\n" + route + ": " + (", ".join(k + "=" + str(v) for k, v in counts.items()) or "0"))
         print("\nCamera metadata: " + json.dumps(report["cameraMetadata"]))
+        print("Hash sources: " + json.dumps(report.get("hashSources", {})))
         print("360 bundles: complete=" + str(report["bundles"]["complete"]) +
               ", lrvMissing=" + str(len(report["bundles"]["lrvMissing"])) +
               ", incomplete=" + str(len(report["bundles"]["incomplete"])))

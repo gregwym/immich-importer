@@ -9,14 +9,15 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 
-from .files import readonly
+from .files import Hasher, readonly
 from .model import ImportFailure
 
 
 
 class Multipart:
     """Known-length multipart iterator; media is read in bounded blocks."""
-    def __init__(self, fields):
+    def __init__(self, fields, observe=None):
+        self.observe = observe  # Called with every streamed media block.
         boundary = "camera-import-" + uuid4().hex
         self.content_type = "multipart/form-data; boundary=" + boundary
         self.parts = []
@@ -48,6 +49,8 @@ class Multipart:
                     if not block:
                         raise ImportFailure("Source became shorter during upload")
                     remaining -= len(block)
+                    if self.observe:
+                        self.observe(block)
                     yield block
             yield b"\r\n"
         yield self.tail
@@ -185,6 +188,10 @@ class Immich:
         timestamp = datetime.fromtimestamp(item.fingerprint[3] / 1e9, timezone.utc).isoformat()
         # These required transport timestamps are filesystem facts. Capture time
         # extraction remains Immich's job; no timezone is guessed from filenames.
+        # Unknown hashes are computed from the very bytes being sent, so a new
+        # file is read once. The server's checksum is compared against them in
+        # validate_identity, which is what proves the stored copy is intact.
+        hasher = None if item.sha1 else Hasher()
         with readonly(item.path, item.fingerprint) as media:
             # No `filename` form field: v3.1.0 validates every part, the sidecar
             # included, against body.filename when present, and `x.MP4` is not
@@ -193,9 +200,16 @@ class Immich:
                       "fileCreatedAt": timestamp, "fileModifiedAt": timestamp, "visibility": item.route}
             if item.xmp is not None:
                 fields["sidecarData"] = (item.path.name + ".xmp", item.xmp, "application/rdf+xml")
-            encoder = Multipart(fields)
-            response = self.request("POST", "/assets", data=encoder,
-                                    headers={"Content-Type": encoder.content_type})
+            encoder = Multipart(fields, hasher.update if hasher else None)
+            try:
+                response = self.request("POST", "/assets", data=encoder,
+                                        headers={"Content-Type": encoder.content_type})
+            finally:
+                # Whatever the response, a fully streamed file yielded its hashes;
+                # the read-only guard above rejects a source changed meanwhile.
+                if hasher and hasher.size == item.size:
+                    item.sha1, item.sha256 = hasher.digests()
+                    item.hash_source = "upload"
         if not isinstance(response, dict) or response.get("status") not in ("created", "duplicate"):
             raise ImportFailure("Unrecognized Immich upload response")
         return asset_id(response.get("id")), response["status"]

@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from . import manifest
+from . import hashcache, manifest
 from .api import Immich
 from .config import authenticate, describe
 from .files import archive_wav, atomic_json, hashes, locked, snapshot, validate_roots
@@ -77,6 +77,7 @@ def summarize(plan, config, dry_run, metadata_verify, manifests=0, warnings=()):
     return {"schemaVersion": 1, "source": str(plan.source), "dryRun": dry_run, "config": describe(config),
             "result": ("DRY RUN OK" if dry_run else "SAFE TO REVIEW FOR CARD FORMAT") if success else "NOT SAFE TO FORMAT SOURCE",
             "exitCode": 0 if success else 1, "counts": routes,
+            "hashSources": dict(Counter(i.hash_source for i in plan.items if i.hash_source)),
             "cameraMetadata": {"verified": sum(i.verified for i in plan.assets),
                                "failed": sum(i.status == "failed" for i in plan.assets),
                                "xmpPrepared": sum(i.xmp is not None for i in plan.assets)},
@@ -169,33 +170,63 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
         with contextlib.ExitStack() as stack:
             stack.enter_context(locked(config.manifest_root))
             stack.enter_context(locked(config.companion_root))
-            # Hash and preflight ALL identities before any upload. Same bytes
-            # cannot satisfy incompatible camera/visibility roles for one owner.
-            identities = {}
-            hashing = [i for i in plan.assets if not i.error]
-            for index, item in enumerate(hashing, 1):
-                progress("[" + str(index) + "/" + str(len(hashing)) + "] hashing: " + item.relative)
+            now = datetime.now(timezone.utc)
+            index = hashcache.load(config.manifest_root)
+            previous = {}
+            for key in plan.bundles:
                 try:
-                    if item.path.suffix.lower() not in api.media_types:
-                        raise ImportFailure("Format is not supported by this Immich server")
+                    previous[key] = manifest.load(config.manifest_root / "insta360" / (key + ".json"))
+                except (OSError, ImportFailure) as error:
+                    for item in plan.bundles[key]:
+                        fail(item, error)
+            # Hashes come from the index when the file is unchanged, are read up
+            # front only where a decision needs them before any upload (a bundle
+            # role the manifest already records), and are otherwise computed
+            # from the upload stream itself so a new file is read exactly once.
+            candidates = [i for i in plan.items if i.route in ("timeline", "companion") and not i.error]
+            for item in candidates:
+                cached = hashcache.lookup(index, item)
+                if cached:
+                    item.sha1, item.sha256 = cached
+                    item.hash_source = "index"
+            recorded = set()
+            for key, value in previous.items():
+                for row in (value or {}).get("members", []):
+                    if isinstance(row, dict) and row.get("sha256"):
+                        recorded.add((key, row.get("role")))
+            upfront = [i for i in plan.assets if not i.error and not i.sha1 and (i.bundle, i.role) in recorded]
+            for position, item in enumerate(upfront, 1):
+                progress("[" + str(position) + "/" + str(len(upfront)) + "] hashing (manifest check): " + item.relative)
+                try:
                     item.sha1, item.sha256 = hashes(item.path, item.fingerprint)
-                    log(item.relative + " SHA-256 " + item.sha256)
-                    identities.setdefault(item.sha1, []).append(item)
+                    item.hash_source = "read"
                 except (OSError, ImportFailure) as error:
                     fail(item, error)
-            for matches in identities.values():
-                contracts = {(i.sha256, i.route, tuple(sorted(i.expected.items()))) for i in matches}
-                if len(contracts) > 1:
-                    for item in matches:
-                        fail(item, "Same Immich checksum has conflicting content, visibility or camera metadata")
-                elif len({i.stack for i in matches if i.stack}) < sum(1 for i in matches if i.stack):
-                    # One Immich asset cannot fill two roles of the same stack.
-                    for item in matches:
-                        fail(item, "Identical bytes in two members of one bundle/stack; needs review")
+            for item in plan.assets:
+                if not item.error and item.path.suffix.lower() not in api.media_types:
+                    fail(item, "Format is not supported by this Immich server")
+
+            def identity_checks():
+                # Same bytes cannot satisfy incompatible camera/visibility roles for
+                # one owner, nor two roles of one stack. Applied to every item whose
+                # hash is known, before upload where possible and again afterwards.
+                identities = {}
+                for item in plan.assets:
+                    if item.sha1 and not item.error:
+                        identities.setdefault(item.sha1, []).append(item)
+                for matches in identities.values():
+                    contracts = {(i.sha256, i.route, tuple(sorted(i.expected.items()))) for i in matches}
+                    if len(contracts) > 1:
+                        for item in matches:
+                            fail(item, "Same Immich checksum has conflicting content, visibility or camera metadata")
+                    elif len({i.stack for i in matches if i.stack}) < sum(1 for i in matches if i.stack):
+                        for item in matches:
+                            fail(item, "Identical bytes in two members of one bundle/stack; needs review")
+
+            identity_checks()
             for key, members in plan.bundles.items():
                 try:
-                    previous = manifest.load(config.manifest_root / "insta360" / (key + ".json"))
-                    manifest.merge(previous, key, api.owner_id, config.api_url, members)
+                    manifest.merge(previous.get(key), key, api.owner_id, config.api_url, members)
                 except (OSError, ImportFailure) as error:
                     for item in members:
                         fail(item, error)
@@ -203,24 +234,28 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                 if item.route == "companion" and not item.error:
                     progress("companion: " + item.relative)
                     try:
+                        if not item.sha1:
+                            item.hash_source = "read"
                         item.status = archive_wav(item, config.companion_root)
                         item.verified = True
                         log(item.relative + ": " + item.status)
                     except (OSError, ImportFailure) as error:
                         fail(item, error)
             pending = [i for i in plan.assets if not i.error]
+            known = [i for i in pending if i.sha1]
             try:
-                existing = api.check(pending) if pending else {}
+                existing = api.check(known) if known else {}
             except ImportFailure as error:
                 existing = {}
-                for item in pending:
+                for item in known:
                     fail(item, error)
             # Avoid redundant sends for repeated identical source copies.
             resolved = {}
-            for index, item in enumerate(pending, 1):
+            for position, item in enumerate(pending, 1):
                 if item.error:
                     continue
-                progress("[" + str(index) + "/" + str(len(pending)) + "] upload/verify: " + item.relative)
+                action = "verify" if item.relative in existing else "upload+hash" if not item.sha1 else "upload"
+                progress("[" + str(position) + "/" + str(len(pending)) + "] " + action + ": " + item.relative)
                 try:
                     duplicate = existing.get(item.relative)
                     if duplicate:
@@ -228,16 +263,28 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                         if trashed:
                             raise ImportFailure("Matching asset is in the trash")
                         item.status = "already_present"
-                    elif item.sha1 in resolved:
+                    elif item.sha1 and item.sha1 in resolved:
                         item.asset_id, item.status = resolved[item.sha1], "already_present"
                     else:
                         item.asset_id, status = api.upload(item)
                         item.status = "uploaded" if status == "created" else "already_present"
+                        log(item.relative + " SHA-256 " + item.sha256)
                     resolved[item.sha1] = item.asset_id
                     api.verify(item, metadata_verify)
                     log(item.relative + ": " + item.status)
                 except (OSError, ImportFailure) as error:
                     fail(item, error)
+                finally:
+                    # Whatever the outcome, the hash is a fact about the bytes.
+                    hashcache.record(index, item, now)
+            identity_checks()
+            for item in plan.items:
+                if item.route == "companion":
+                    hashcache.record(index, item, now)
+            try:
+                hashcache.save(config.manifest_root, index, now)
+            except (OSError, ImportFailure):
+                plan.errors.append("Failed to persist hash index")
             for key, members in plan.stacks.items():
                 if any(m.error or not m.asset_id for m in members):
                     continue

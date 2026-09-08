@@ -707,12 +707,56 @@ class IntegrationTest(Workspace):
         self.assertEqual(report["exitCode"], 1)
         self.assertNotIn("test-secret", json.dumps(report))
 
-    def test_same_checksum_conflicting_roles_fails_before_upload(self):
+    def test_same_checksum_conflicting_roles_fails(self):
         for name in TRIO:
             self.put(name, b"same bytes")
         report = self.run_import()
         self.assertEqual(report["exitCode"], 1)
-        self.assertFalse(self.server.uploads)
+        # Hashes come from the upload stream now, so the first copy is sent once;
+        # the identical members are then all failed and never stacked.
+        self.assertEqual(len(self.server.uploads), 1)
+        self.assertEqual(len(self.server.stacks), 0)
+        self.assertTrue(all(i["error"] for i in report["items"]))
+        # Known hashes (from the index) are checked before any upload on rerun.
+        report = self.run_import()
+        self.assertEqual(report["exitCode"], 1)
+        self.assertEqual(len(self.server.uploads), 1)
+
+    def test_hash_index_skips_reads_on_rerun_and_survives_dropped_response(self):
+        self.put("DJI_20251226075842_0001_D.MP4", b"m" * 3000000)
+        self.put("DJI_20251226075842_0001_D.WAV", b"w" * 20000)
+        first = self.run_import()
+        self.assertEqual(first["exitCode"], 0, first["errors"])
+        self.assertEqual(first["hashSources"], {"upload": 1, "read": 1})
+        index = json.loads((self.config.manifest_root / "hashes.json").read_text())["entries"]
+        self.assertEqual(len(index), 2)
+        real_hashes = hashes
+
+        def destination_only(path, expected=None):
+            if str(path).startswith(str(self.source)):
+                raise AssertionError("no source read expected")
+            return real_hashes(path, expected)
+        with patch("camera_importer.runner.hashes", side_effect=AssertionError("no read expected")), \
+                patch("camera_importer.files.hashes", side_effect=destination_only):
+            second = self.run_import()
+        self.assertEqual(second["exitCode"], 0, second["errors"])
+        self.assertEqual(second["hashSources"], {"index": 2})
+        self.assertEqual(len(self.server.uploads), 1)
+        # A modified file misses the index (fingerprint changes) and is re-hashed.
+        self.put("DJI_20251226075842_0001_D.MP4", b"n" * 3000000)
+        third = self.run_import()
+        self.assertEqual(third["hashSources"], {"index": 1, "upload": 1})
+        self.assertEqual(len(self.server.uploads), 2)
+        # Streamed hashes are indexed even when the upload response is lost.
+        self.put("DJI_20251226075843_0002_D.MP4", b"o" * 3000000)
+        self.server.drop_response = True
+        self.assertEqual(self.run_import()["exitCode"], 1)
+        self.server.drop_response = False
+        with patch("camera_importer.runner.hashes", side_effect=AssertionError("no read expected")):
+            fifth = self.run_import()
+        self.assertEqual(fifth["exitCode"], 0, fifth["errors"])
+        self.assertEqual(fifth["hashSources"], {"index": 3})
+        self.assertEqual(len(self.server.uploads), 3)
 
     def test_manifest_conflict_prevents_upload(self):
         for name in TRIO:
@@ -767,6 +811,23 @@ class IntegrationTest(Workspace):
         self.server.version["major"] = 4
         with self.assertRaisesRegex(ImportFailure, "version"):
             self.run_import()
+
+
+class HashIndexTest(unittest.TestCase):
+    def test_prune_by_age_and_size(self):
+        from datetime import datetime, timedelta, timezone
+        from camera_importer import hashcache
+        now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        entries = {}
+        for day in range(300):
+            entries[str(day)] = {"sha1": "a" * 40, "sha256": "b" * 64, "size": 1, "path": "x", "seen": (now - timedelta(days=day)).isoformat()}
+        entries["bad"] = {"sha1": "a" * 40, "sha256": "b" * 64, "size": 1, "path": "x", "seen": "not a date"}
+        kept = hashcache.prune(entries, now)
+        self.assertEqual(len(kept), 181)
+        self.assertNotIn("bad", kept)
+        with patch.object(hashcache, "MAX_ENTRIES", 10):
+            kept = hashcache.prune(entries, now)
+        self.assertEqual(sorted(int(k) for k in kept), list(range(10)))
 
 
 class AuthTest(unittest.TestCase):

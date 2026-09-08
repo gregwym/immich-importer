@@ -13,7 +13,7 @@ Paths below are relative to the configured `/api` URL.
 | `GET /server/version` | `major`, `minor`, `patch`; exactly 3.1.0 |
 | `GET /users/me` | Confirm camera account name or explicit user ID |
 | `GET /server/media-types` | `image` / `video` arrays contain extensions, despite their OpenAPI descriptions saying MIME types |
-| `POST /assets/bulk-upload-check` | `{assets: [{id, checksum}]}` with hex SHA-1; accept or duplicate reject with existing `assetId` |
+| `POST /assets/bulk-upload-check` | `{assets: [{id, checksum}]}` with hex SHA-1; accept or duplicate reject with existing `assetId`. Only for files whose hash is already known (hash index or manifest pre-check); other files are uploaded directly and the server's own checksum dedup answers `duplicate` |
 | `POST /assets` | Streaming multipart: `assetData`, optional `sidecarData`, `fileCreatedAt`, `fileModifiedAt`, `visibility`. No `filename` field: `canUploadFile` checks every file part against `body.filename \|\| file.originalName`, so a `filename` form field parsed before `sidecarData` makes the sidecar fail `isSidecar` with HTTP 400 "Unsupported file type". The asset part's own filename becomes `originalFileName` |
 | `GET /assets/{id}` | `id`, `ownerId`, base64 SHA-1 `checksum`, `visibility`, `libraryId`, `isTrashed`, `isOffline`, `exifInfo` |
 | `PUT /assets/{id}` | Update only `visibility`, then verify |

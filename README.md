@@ -201,8 +201,11 @@ camera-import --check-config --companion-root /volume1/immich/companions --manif
 /volume1/immich/manifests/runs/<UTC-time>-<unique-id>.json
 ```
 
-- WAV 先写目标目录内临时文件，fsync 后核验 SHA-256，再用不覆盖已有文件的原子操作发布。已有同 hash 文件跳过，不同 hash 永不覆盖。日期取 filename，不取 mtime。
-- 媒体同时计算 SHA-1（Immich checksum）和 SHA-256（manifest）。相同 checksum 对应冲突角色或相机信息时，不尝试反复修改同一个 asset。
+- WAV / AAC 先写目标目录内临时文件（源只读一遍，边复制边算 hash），fsync 后重新读取副本核验 SHA-256，再用不覆盖已有文件的原子操作发布。已有同 hash 文件跳过，不同 hash 永不覆盖。日期取 filename，不取 mtime。
+- 媒体同时计算 SHA-1（Immich checksum）和 SHA-256（manifest）。**新文件只读一遍：** hash 直接从上传的数据流计算，上传后与服务器保存的 checksum 比对。相同 checksum 对应冲突角色或相机信息时，不尝试反复修改同一个 asset；这类冲突在 hash 已知时上传前拦截，否则在第一份上传后发现并把相关文件全部标为失败。
+- **Hash 索引 `manifest_root/hashes.json`：** 以文件 fingerprint（设备、inode、大小、mtime、ctime）为键记录 SHA-1 / SHA-256。重跑时 fingerprint 一致的文件不再读盘，直接用 `bulk-upload-check` 判重；索引只回答「这些字节上次算出来是什么」，是否已入库和完整性仍由服务器 checksum 决定。中途失败（断网、响应丢失）时已经流式算完的 hash 也会写入索引。180 天未再见到的条目自动删除，总数上限 20 万条，每条约 200 字节。
+- 只有 manifest 里已经记录过的 360 bundle 成员会在上传前单独读一遍算 hash，用来在上传前发现「同名不同内容」的 manifest 冲突。
+- Report 的 `hashSources` 统计每个文件的 hash 来源：`index`（索引命中）、`upload`（上传流）、`read`（上传前读取）。
 - Manifest 记录 bundle key、role、原 filename、size、SHA-256、Immich checksum、asset ID、owner 和服务器身份。锁定后检查旧记录，合并缺失信息，再原子写入；冲突保留原文件并失败。
 - 允许保存不完整 bundle 的部分进度，但不会把它算作安全完成。重复运行能补齐缺失成员的 asset ID，并把 stack 重建为完整成员。
 - 网络中断后直接重复执行同一命令即可通过 checksum 找到已有资源；不依赖上次报告决定跳过验证。

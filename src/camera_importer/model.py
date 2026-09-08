@@ -26,6 +26,7 @@ class Item:
     size: int = 0
     sha1: str = ""
     sha256: str = ""
+    hash_source: str = ""  # "index", "read" or "upload"
     xmp: Optional[bytes] = None
     asset_id: Optional[str] = None
     status: str = "planned"
@@ -37,7 +38,7 @@ class Item:
                 "expectedMetadata": self.expected, "embeddedMetadata": self.embedded,
                 "stackKey": self.stack, "stackId": self.stack_id, "bundleKey": self.bundle,
                 "role": self.role, "size": self.size, "sha1": self.sha1,
-                "sha256": self.sha256, "assetId": self.asset_id,
+                "sha256": self.sha256, "hashSource": self.hash_source, "assetId": self.asset_id,
                 "status": self.status, "verified": self.verified,
                 "xmpPrepared": self.xmp is not None, "error": self.error}
 

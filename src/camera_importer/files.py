@@ -42,13 +42,26 @@ def readonly(path, expected=None):
             raise ImportFailure("SOURCE CHANGED: " + str(path))
 
 
+class Hasher:
+    """SHA-1 (Immich checksum) and SHA-256 (manifest) over one pass of bytes."""
+    def __init__(self):
+        self.sha1, self.sha256, self.size = hashlib.sha1(), hashlib.sha256(), 0
+
+    def update(self, block):
+        self.sha1.update(block)
+        self.sha256.update(block)
+        self.size += len(block)
+
+    def digests(self):
+        return self.sha1.hexdigest(), self.sha256.hexdigest()
+
+
 def hashes(path, expected=None):
-    sha1, sha256 = hashlib.sha1(), hashlib.sha256()
+    hasher = Hasher()
     with readonly(path, expected) as stream:
         for block in iter(lambda: stream.read(CHUNK), b""):
-            sha1.update(block)
-            sha256.update(block)
-    return sha1.hexdigest(), sha256.hexdigest()
+            hasher.update(block)
+    return hasher.digests()
 
 
 def within(path, root):
@@ -109,19 +122,28 @@ def locked(root):
 def archive_wav(item, root):
     destination = root / "pocket3" / item.date[:4] / item.date / item.path.name
     safe_directory(destination.parent)
-    item.sha1, item.sha256 = hashes(item.path, item.fingerprint)
     if os.path.lexists(destination):
+        if not item.sha256:
+            item.sha1, item.sha256 = hashes(item.path, item.fingerprint)
         if hashes(destination)[1] != item.sha256:
             raise ImportFailure("COLLISION: " + str(destination))
         return "already_archived"
     fd, name = tempfile.mkstemp(prefix=".camera-import-", suffix=".partial", dir=destination.parent)
     temporary = Path(name)
     try:
+        # One read of the source: hash the same bytes that are written out, then
+        # confirm the copy independently by hashing the destination side.
+        hasher = Hasher()
         with os.fdopen(fd, "wb") as out, readonly(item.path, item.fingerprint) as inp:
             for block in iter(lambda: inp.read(CHUNK), b""):
+                hasher.update(block)
                 out.write(block)
             out.flush()
             os.fsync(out.fileno())
+        streamed = hasher.digests()
+        if item.sha256 and item.sha256 != streamed[1]:
+            raise ImportFailure("Source bytes differ from the indexed hash: " + item.relative)
+        item.sha1, item.sha256 = streamed
         if hashes(temporary)[1] != item.sha256:
             raise ImportFailure("Companion SHA-256 mismatch: " + item.relative)
         try:
