@@ -10,6 +10,56 @@ camera-import --verbose /some/history-folder
 camera-import --json /some/history-folder
 ```
 
+## DSM 一键安装（clone 后）
+
+```sh
+sh install.sh
+```
+
+安装器自动安装 **camera-import、ExifTool 和 Immich CLI**，不需要 pip、sudo 或 root。已存在且可运行的工具会复用；不重新登录，不改动 API key、素材、companions 或 manifests。
+
+| 类别 | 安装器行为 |
+|---|---|
+| Python ≥ 3.8（包括 DSM 3.8.15） | 只检查，不安装运行时 |
+| Node ≥ 20、Perl | 只检查，不安装运行时 |
+| npm | 安装 CLI 时必须可用；不自动安装 npm 本身 |
+| Immich CLI | 缺失时执行 `npm install --global --prefix "$HOME/.local" --engine-strict --no-audit --no-fund @immich/cli@3.1.0` |
+| ExifTool | 缺失时下载官方 GitHub 仓库固定 commit 的 13.59 源码包，校验固定 SHA-256 后解压，无需系统安装 |
+| camera-import | 安装单文件脚本并生成 shell wrapper，记录 Python、ExifTool、CLI 路径 |
+
+安装后命令：
+
+```sh
+camera-import --dry-run /some/folder
+camera-import /some/folder
+```
+
+默认位置：
+
+```text
+~/.local/bin/camera-import
+~/.local/bin/exiftool                 # 仅需安装 ExifTool 时创建
+~/.local/bin/immich                   # npm 全局安装位置
+~/.local/lib/node_modules/@immich/cli/ # npm 管理
+~/.local/share/immich-importer/
+```
+
+安装器幂等地向 `~/.profile` 添加 PATH。当前父 shell 不会被子进程改变，新登录会话即可使用短命令；当前会话可用 `~/.local/bin/camera-import` 或执行 `. ~/.profile`。
+
+再次执行 `sh install.sh` 即更新 importer，并复用现有依赖。安装过程只运行 `--version` / `-ver` 自检，不连接 Immich、不上传文件，也不触发登录。如果原本未登录，正常导入时仍需要已有的 `immich login` 凭据。
+
+可选参数和环境变量：
+
+```sh
+sh install.sh --no-profile
+sh install.sh --prefix /your/user/local
+PYTHON_BIN=/path/to/python3 NODE_BIN=/path/to/node PERL_BIN=/path/to/perl sh install.sh
+```
+
+`--prefix` 同时控制工具目录和 npm prefix，默认 `~/.local`；`NPM_BIN` 可指定 npm。已安装工具可通过 `IMMICH_BIN` / `EXIFTOOL_BIN` 指定。离线 ExifTool 包可用 `--exiftool-archive PATH`，仍要求同一固定 SHA-256；缺少 CLI 的安装仍需 npm 网络或缓存。
+
+安装器不会覆盖不属于它的 `camera-import` / `exiftool` 命令；npm 安装失败时返回非零。下载安装的 ExifTool 固定源及 checksum 记录在 [`tools/install.py`](tools/install.py)。
+
 ## DSM：无需 pip 的单文件脚本
 
 需要 Python **3.8+**、Perl / **ExifTool**，以及已经登录的 Immich CLI。兼容 DSM 7.2.2 自带的 Python 3.8.15，没有任何第三方 Python 依赖。
