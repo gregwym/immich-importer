@@ -4,9 +4,9 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import load_config
+from .config import format_config, load_config
 from .model import ImportFailure
-from .runner import execute
+from .runner import check_config, execute
 
 
 def parser():
@@ -15,7 +15,9 @@ def parser():
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument("--dry-run", action="store_true", help="Plan locally; no API calls or persistent writes")
     p.add_argument("--verbose", action="store_true", help="Diagnostic progress on stderr; never log credentials")
+    p.add_argument("--quiet", action="store_true", help="No progress lines on stderr")
     p.add_argument("--json", action="store_true", help="Exactly one JSON report on stdout")
+    p.add_argument("--check-config", action="store_true", help="Validate configuration, tools and Immich access; touches no media")
     p.add_argument("--strict", action="store_true", help="Abort before writes when planning finds any issue")
     p.add_argument("--no-metadata-verify", action="store_true", help="Debug only; always produces a non-success safety result")
     p.add_argument("--config", help="Configuration JSON (default ~/.config/camera-import/config.json)")
@@ -28,6 +30,12 @@ def parser():
 
 
 def display(report):
+    if "checks" in report:
+        print("Configuration Check\n===================")
+        for check in report["checks"]:
+            print(("  OK   " if check["status"] == "ok" else "  FAIL ") + check["name"] + ": " + check["detail"])
+        print("\nRESULT: " + report["result"])
+        return
     print("Camera Import Summary\n=====================")
     print("Source: " + report.get("source", ""))
     if "items" in report:
@@ -71,8 +79,15 @@ def main(argv=None):
         if not source.is_dir():
             raise ImportFailure("Source must be a directory")
         config = load_config(args)
-        log = (lambda message: print(message, file=sys.stderr, flush=True)) if args.verbose else (lambda message: None)
-        report = execute(source, config, args.dry_run, args.strict, not args.no_metadata_verify, log)
+        if not args.json:
+            print("Configuration:\n" + format_config(config) + "\n", flush=True)
+        stderr = lambda message: print(message, file=sys.stderr, flush=True)
+        log = stderr if args.verbose else (lambda message: None)
+        progress = (lambda message: None) if args.quiet else stderr
+        if args.check_config:
+            report = check_config(source, config, log)
+        else:
+            report = execute(source, config, args.dry_run, args.strict, not args.no_metadata_verify, log, progress=progress)
     except KeyboardInterrupt:
         report = {"result": "NOT SAFE TO FORMAT SOURCE", "exitCode": 130, "errors": ["Interrupted; rerun to verify partial progress"]}
     except (ImportFailure, OSError) as error:

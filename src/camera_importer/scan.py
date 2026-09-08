@@ -7,9 +7,13 @@ from pathlib import Path
 from .files import fingerprint
 from .model import Item, Plan
 
-DJI = re.compile(r"^DJI_(\d{8})(\d{6})_.+\.(jpg|jpeg|mp4|wav|lrf)$", re.I)
-INSTA = re.compile(r"^(VID|LRV)_(\d{8})_(\d{6})_(\d{2})_(\d+)\.(mp4|insv)$", re.I)
-PHOTO = re.compile(r"^IMG_(\d{8})_(\d{6})_(\d{2})_(\d+)\.(insp|jpg|jpeg|dng)$", re.I)
+# Pocket 3: DJI_YYYYMMDDHHMMSS_NNNN_D.EXT (MP4/JPG/DNG media, WAV/AAC audio backup, LRF proxy).
+DJI = re.compile(r"^DJI_(\d{8})(\d{6})_.+\.(jpg|jpeg|dng|mp4|wav|aac|lrf)$", re.I)
+# ONE RS: [PRO_]{VID|LRV}_YYYYMMDD_HHMMSS_{00,01,10,11}_XXX.{mp4|insv}; PRO_ marks HDR/PRO
+# mode files that Insta360 apps post-process. Channel: first digit = lens, second = proxy.
+INSTA = re.compile(r"^(PRO_)?(VID|LRV)_(\d{8})_(\d{6})_(\d{2})_(\d+)\.(mp4|insv)$", re.I)
+PHOTO = re.compile(r"^(?:PRO_)?IMG_(\d{8})_(\d{6})_(\d{2})_(\d+)\.(insp|jpg|jpeg|dng)$", re.I)
+BUNDLE_ROLES = {"master-00": "VID_{}_00_{}.insv", "master-10": "VID_{}_10_{}.insv", "lrv-11": "LRV_{}_11_{}.insv"}
 POCKET = {"make": "DJI", "model": "DJI OsmoPocket3"}
 ONERS = {"make": "Insta360", "model": "Insta360 OneRS"}
 
@@ -35,30 +39,26 @@ def classify(path, relative):
         item.date = capture_date(day, clock)
         item.expected = dict(POCKET)
         extension = extension.lower()
-        item.route = "companion" if extension == "wav" else "ignored" if extension == "lrf" else "timeline"
-        item.reason = "Pocket DJI LRF" if extension == "lrf" else "Pocket 3 " + extension.upper()
+        item.route = "companion" if extension in ("wav", "aac") else "ignored" if extension == "lrf" else "timeline"
+        item.reason = "Pocket 3 LRF proxy" if extension == "lrf" else "Pocket 3 " + extension.upper()
         return item
     match = INSTA.fullmatch(path.name)
     if match:
-        prefix, day, clock, channel, sequence, extension = match.groups()
-        prefix, extension = prefix.upper(), extension.lower()
+        pro, prefix, day, clock, channel, sequence, extension = match.groups()
+        pro, prefix, extension = "PRO_" if pro else "", prefix.upper(), extension.lower()
+        mode = "HDR/PRO " if pro else ""
         item.date = capture_date(day, clock)
         item.expected = dict(ONERS)
         if extension == "mp4":
-            # Known ONE RS flat video layouts only; future channels need review.
-            if (prefix, channel) in (("VID", "00"), ("LRV", "01")):
+            # 4K Boost flat video: VID master on channel 00 or 10, LRV proxy on 01 or 11.
+            if (prefix, channel) in (("VID", "00"), ("VID", "10"), ("LRV", "01"), ("LRV", "11")):
                 item.route = "timeline" if prefix == "VID" else "ignored"
-                item.reason = "Insta360 4K Boost" if prefix == "VID" else "Insta360 normal MP4 LRV"
+                item.reason = "Insta360 4K Boost " + mode + ("video" if prefix == "VID" else "LRV proxy")
                 item.expected["lensModel"] = "4K Boost Lens"
-            elif (prefix, channel) in (("VID", "10"), ("LRV", "11")):
-                # Single-lens (steady cam) MP4 from the 360 lens; the lens is
-                # confirmed from metadata rather than guessed from the filename.
-                item.route = "timeline" if prefix == "VID" else "ignored"
-                item.reason = "Insta360 single-lens MP4" if prefix == "VID" else "Insta360 single-lens MP4 LRV"
         elif (prefix, channel) in (("VID", "00"), ("VID", "10"), ("LRV", "11")):
             item.route = "timeline" if prefix == "LRV" else "archive"
-            item.reason = "Insta360 360 bundle"
-            item.bundle = f"{day}_{clock}_{sequence}"
+            item.reason = "Insta360 " + mode + "360 bundle"
+            item.bundle = f"{pro}{day}_{clock}_{sequence}"
             item.role = "lrv-11" if prefix == "LRV" else "master-" + channel
             item.expected["lensModel"] = "5.7K 360 Lens"
         return item
@@ -131,10 +131,9 @@ def scan(source):
             plan.bundles.setdefault(item.bundle, []).append(item)
     for key, members in plan.bundles.items():
         roles = [m.role for m in members]
-        day, clock, seq = key.split("_")
-        expected = {"master-00": f"VID_{day}_{clock}_00_{seq}.insv",
-                    "master-10": f"VID_{day}_{clock}_10_{seq}.insv",
-                    "lrv-11": f"LRV_{day}_{clock}_11_{seq}.insv"}
+        pro, stamp = ("PRO_", key[4:]) if key.startswith("PRO_") else ("", key)
+        day_clock, seq = stamp.rsplit("_", 1)
+        expected = {role: pro + name.format(day_clock, seq) for role, name in BUNDLE_ROLES.items()}
         missing = [name for role, name in expected.items() if role not in roles]
         if "lrv-11" not in roles:
             # The LRV proxy is derivable from the masters, so its absence loses
@@ -143,7 +142,7 @@ def scan(source):
             for member in members:
                 if member.role == "master-00":
                     member.route, member.reason = "timeline", "Insta360 360 bundle (no LRV; master shown in timeline)"
-            missing = [name for name in missing if not name.startswith("LRV_")]
+            missing = [name for name in missing if "LRV_" not in name]
         if missing:
             plan.incomplete[key] = missing
         if len(roles) != len(set(roles)):

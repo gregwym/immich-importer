@@ -23,6 +23,27 @@ class Config:
     verify_timeout: float = 180.0
     poll_interval: float = 2.0
     request_timeout: float = 300.0
+    # Provenance for display only; never a configuration file key.
+    config_path: str = field(default="", compare=False)
+    config_found: bool = field(default=False, compare=False)
+
+
+PUBLIC = ("companion_root", "manifest_root", "immich_bin", "exiftool_bin", "api_url", "auth_dir",
+          "expected_user_name", "expected_user_id", "verify_timeout", "poll_interval", "request_timeout")
+
+
+def describe(config):
+    """Effective configuration without secrets, for reports and the start-up banner."""
+    values = {"config_file": config.config_path + ("" if config.config_found else " (not found; defaults)")}
+    for key in PUBLIC:
+        values[key] = str(getattr(config, key))
+    values["api_url"] = config.api_url or "(from Immich CLI auth.yml)"
+    values["api_key"] = "IMMICH_API_KEY" if config.api_key else "Immich CLI auth.yml"
+    return values
+
+
+def format_config(config):
+    return "\n".join("  " + key + ": " + value for key, value in describe(config).items())
 
 
 def load_config(args):
@@ -37,7 +58,7 @@ def load_config(args):
             raise ImportFailure("Cannot read configuration JSON") from None
     if "api_key" in values:
         raise ImportFailure("Store API keys in IMMICH_API_KEY or the CLI auth file, not project configuration")
-    unknown = set(values) - set(Config.__dataclass_fields__)
+    unknown = set(values) - set(PUBLIC)
     if unknown:
         raise ImportFailure("Unknown configuration keys: " + ", ".join(sorted(unknown)))
     env = {"COMPANION_ROOT": "companion_root", "MANIFEST_ROOT": "manifest_root",
@@ -53,6 +74,7 @@ def load_config(args):
             values[key] = value
     try:
         config = Config(**values)
+        config.config_path, config.config_found = str(config_path), config_path.exists()
         for field in ("companion_root", "manifest_root", "auth_dir"):
             # Keep symlink components for safe_directory's explicit rejection.
             setattr(config, field, Path(os.path.abspath(Path(getattr(config, field)).expanduser())))

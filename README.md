@@ -82,6 +82,8 @@ camera-import() { python3 /path/to/camera-import.py "$@"; }
 
 有 pip 的环境仍可选择 `python3 -m pip install --user .` 安装命令入口，但 DSM 不需要此步骤。
 
+扫描时 stderr 会持续输出进度（`[n/total] metadata: 文件`、hashing、upload/verify），`--quiet` 可关闭。metadata 读取按每批 50 个文件调用一次 ExifTool，避免在 NAS 上逐个文件启动 Perl；单个文件读取失败时再单独重试并精确报告。
+
 ExifTool 只用于**读取**媒体 metadata。可以使用已安装的 `exiftool`，或者把 [ExifTool 官方 Perl distribution](https://exiftool.org/install.html#Unix) 解压到用户可读目录，并配置可执行文件的绝对路径：
 
 ```sh
@@ -95,22 +97,22 @@ immich server-info
 
 | 素材 | 目的地 | Camera / Lens |
 |---|---|---|
-| Pocket 3 `DJI_...JPG/JPEG/MP4` | Immich timeline | DJI / DJI OsmoPocket3；保留原镜头字段 |
-| Pocket 3 `DJI_...WAV` | Companion archive，SHA-256 验证 | filename 日期 |
+| Pocket 3 `DJI_...JPG/JPEG/DNG/MP4` | Immich timeline | DJI / DJI OsmoPocket3；保留原镜头字段 |
+| Pocket 3 `DJI_...WAV/AAC` | Companion archive，SHA-256 验证 | filename 日期 |
 | Pocket 3 `DJI_...LRF` | 明确忽略，源文件保留 | — |
-| ONE RS `VID_..._00_....mp4` | Immich timeline | Insta360 / Insta360 OneRS / 4K Boost Lens |
-| ONE RS `LRV_..._01_....mp4` | 明确忽略，源文件保留 | — |
-| ONE RS `VID_..._10_....mp4`（360 镜头单镜头模式） | Immich timeline | Insta360 / Insta360 OneRS；镜头由 metadata 确认，不猜 |
-| ONE RS `LRV_..._11_....mp4` | 明确忽略，源文件保留 | — |
-| ONE RS `VID_..._00_....insv` | Immich archive；bundle 缺少 LRV 时改为 timeline | Insta360 / Insta360 OneRS / 5.7K 360 Lens |
-| ONE RS `VID_..._10_....insv` | Immich archive | 同上 |
-| ONE RS `LRV_..._11_....insv` | Immich timeline | 同上 |
-| 明确可独立保存的 INSP / JPEG / DNG | Immich timeline | 必须由 metadata 确认机型；不猜镜头 |
+| ONE RS `VID_..._00/10_....mp4`、`PRO_VID_..._00/10_....mp4`（HDR/PRO） | Immich timeline | Insta360 / Insta360 OneRS / 4K Boost Lens |
+| ONE RS `LRV_..._01/11_....mp4`、`PRO_LRV_...mp4` | 明确忽略，源文件保留 | — |
+| ONE RS `VID_..._00_....insv`、`PRO_VID_..._00_....insv` | Immich archive；bundle 缺少 LRV 时改为 timeline | Insta360 / Insta360 OneRS / 5.7K 360 Lens |
+| ONE RS `VID_..._10_....insv`、`PRO_VID_..._10_....insv` | Immich archive | 同上 |
+| ONE RS `LRV_..._11_....insv`、`PRO_LRV_..._11_....insv` | Immich timeline | 同上 |
+| 明确可独立保存的 INSP / JPEG / DNG（含 HDR 包围曝光的多张 `IMG_` 原片） | Immich timeline | 必须由 metadata 确认机型；不猜镜头 |
 | `Thumb/` 内 JPG/JPEG/PNG/BMP/THM | 明确忽略，源文件保留 | 不把任意 Thumb 子文件都当缓存 |
 | `@` 或 `.` 开头的目录（DSM `@eaDir`、`@Recycle`、`.hidden`） | 整个目录跳过，不进入、不分类 | 报告中列为 skipped |
 | 其他文件、symlink、特殊文件 | UNKNOWN / NEEDS REVIEW | 最终失败，保留源文件 |
 
 文件名不匹配已知规则、未来的新 channel、空文件、无效日期、疑似多文件照片都会要求检查。
+
+**文件命名参考。** Insta360 ONE RS：`[PRO_]{VID|LRV|IMG}_YYYYMMDD_HHMMSS_{00,01,10,11}_XXX.{mp4|insv|insp|jpg|dng}`。两位数第一位是镜头（0 / 1），第二位 0 是 master、1 是 LRV 代理；`PRO_` 前缀表示 HDR / PRO 类模式（Active HDR、FreeFrame 等），Insta360 官方说明这类文件需要在 App / Studio 中后处理，本工具按同样的 channel 规则入库。4K Boost 镜头的 master 可能出现在 `00` 或 `10` channel，两者都写入 `4K Boost Lens`。HDR 照片在卡上是 3 张同一时间戳、序号连续的 `IMG_` 原片，逐张作为独立照片进入 timeline；合成需要 Insta360 App。DJI Pocket 3：`DJI_YYYYMMDDHHMMSS_NNNN_D.{MP4|JPG|DNG|WAV|AAC|LRF}`，AAC 是开启麦克风备份时与 WAV 同步生成的音频文件，与 WAV 同样归档。未在本表内的前缀（例如 X 系列的 `TIM_`、`INTV_`）仍报 UNKNOWN，确认后再补充。
 
 **360 bundle 缺少 LRV：** 一个 bundle 由 `VID_..._00`、`VID_..._10` 两个 master 和 `LRV_..._11` 代理组成。LRV 可由 master 重新生成，删除它不丢失任何原始数据，因此只缺 LRV 的 bundle 不算 incomplete：`VID_..._00_....insv` 改为进入 timeline，作为这段视频的可见条目，`VID_..._10` 仍进入 archive。报告中以 `lrvMissing` 列出这些 bundle。缺少任一 master 仍是 INCOMPLETE 360 BUNDLE 并导致非零退出。之前按 archive 导入的 master，在 LRV 删除后重新运行会把已有 asset 的 visibility 修正为 timeline，manifest 只记录当前 visibility，不视为冲突。通用 `DJI_...` 命名以本项目的 Pocket 3 输入范围解释；若 metadata 明确显示其他 DJI 机型，则报冲突。照片中的其他相机型号不会被改成 ONE RS。
 
@@ -136,7 +138,12 @@ immich server-info
 
 优先级：**命令行 > 环境变量 > config JSON > 默认值**。
 
-默认读取 `~/.config/camera-import/config.json`；可用 `--config PATH` 覆盖。
+默认读取 `~/.config/camera-import/config.json`；可用 `--config PATH` 覆盖。每次运行开头都会打印生效的配置（config 文件、companion / manifest 目录、工具路径、API 地址来源、账号），不包含 API key；`--json` 模式下这些信息放在 report 的 `config` 字段。运行前可用 `camera-import --check-config` 验证配置和 Immich 连接：
+
+```sh
+camera-import --check-config
+camera-import --check-config --companion-root /volume1/immich/companions --manifest-root /volume1/immich/manifests
+```
 
 ```json
 {
@@ -171,7 +178,9 @@ immich server-info
 |---|---|
 | `[PATH]` | 默认 `.` |
 | `--dry-run` | 只读本地计划；不连接 API、不创建输出目录、不归档、不写 manifest |
+| `--check-config` | 只检查配置：输出目录、ExifTool、Immich CLI、凭据、服务器版本 / 账号 / 权限；不读媒体、不创建目录 |
 | `--verbose` | stderr 输出分类、hash、无 secret 的 API 状态 |
+| `--quiet` | 关闭 stderr 上的进度行 |
 | `--json` | stdout 只有一个 JSON report，适合自动化 |
 | `--strict` | 计划发现 unknown、incomplete 或其他错误时，执行写操作前停止 |
 | `--no-metadata-verify` | 调试用途；始终返回非成功安全结论 |

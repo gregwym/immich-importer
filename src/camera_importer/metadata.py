@@ -1,5 +1,6 @@
 """Read with ExifTool; merge camera properties into an in-memory XMP document."""
 import json
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 
@@ -15,14 +16,21 @@ for prefix, uri in NS.items():
     ET.register_namespace(prefix, uri)
 
 
-def probe(path, executable="exiftool"):
+TAGS = ["-Make", "-Model", "-LensID", "-LensType", "-LensSpec", "-LensModel", "-Lens", "-FileType",
+        "-NumberOfImages", "-ProjectionType", "-Error", "-Warning"]
+BATCH = 50
+
+
+def run_exiftool(paths, executable, timeout):
     try:
-        result = subprocess.run([executable, "-api", "largefilesupport=1", "-json", "-Make", "-Model", "-LensID", "-LensType",
-                                 "-LensSpec", "-LensModel", "-Lens", "-FileType", "-NumberOfImages",
-                                 "-ProjectionType", "-Error", "-Warning", str(path)],
-                                capture_output=True, timeout=90, check=False)
+        return subprocess.run([executable, "-api", "largefilesupport=1", "-json"] + TAGS + [str(p) for p in paths],
+                              capture_output=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired):
         raise ImportFailure("ExifTool unavailable or timed out; configure EXIFTOOL_BIN") from None
+
+
+def probe(path, executable="exiftool"):
+    result = run_exiftool([path], executable, 90)
     try:
         entries = json.loads(result.stdout)
         tags = entries[0]
@@ -31,6 +39,33 @@ def probe(path, executable="exiftool"):
         return tags
     except (ValueError, IndexError, TypeError):
         raise ImportFailure("ExifTool could not read media metadata: " + path.name) from None
+
+
+def probe_batch(paths, executable="exiftool"):
+    """One ExifTool process per batch: Perl start-up dominates per-file probing on a NAS.
+
+    Returns tags keyed by path for files ExifTool read cleanly; anything missing
+    is re-probed individually so its error is reported precisely.
+    """
+    found = {}
+    for offset in range(0, len(paths), BATCH):
+        chunk = paths[offset:offset + BATCH]
+        result = run_exiftool(chunk, executable, 90 + 30 * len(chunk))
+        try:
+            entries = json.loads(result.stdout)
+            if not isinstance(entries, list):
+                raise ValueError()
+        except (ValueError, TypeError):
+            continue  # Unreadable batch output: each file is re-probed individually.
+        by_source = {}
+        for tags in entries:
+            if isinstance(tags, dict) and not tags.get("Error") and isinstance(tags.get("SourceFile"), str):
+                by_source[os.path.abspath(tags["SourceFile"])] = tags
+        for path in chunk:
+            tags = by_source.get(os.path.abspath(str(path)))
+            if tags is not None:
+                found[path] = tags
+    return found
 
 
 def normalize(value):
@@ -114,21 +149,19 @@ def make_xmp(expected, original=None):
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-def prepare_metadata(item, executable="exiftool"):
+def prepare_metadata(item, executable="exiftool", tags=None):
     if snapshot(item.path) != item.fingerprint:
         raise ImportFailure("SOURCE CHANGED: " + item.relative)
-    tags = probe(item.path, executable)
+    if tags is None:
+        tags = probe(item.path, executable)
+    # The fingerprint check after reading covers batch-probed files too: any
+    # change between scan and here differs from the planned fingerprint.
     if snapshot(item.path) != item.fingerprint:
         raise ImportFailure("SOURCE CHANGED: " + item.relative)
     if item.route == "probe":
         identify_photo(item, tags)
     else:
         confirm_camera(tags, {k: v for k, v in item.expected.items() if k != "lensModel"})
-        if item.expected.get("make") == ONERS["make"] and "lensModel" not in item.expected:
-            # Filename layouts shared by several lenses keep the lens the camera wrote.
-            lens = detect_lens(tags)
-            if lens:
-                item.expected["lensModel"] = lens
     if "lensModel" in item.expected:
         higher = next((tags[k] for k in ("LensID", "LensType", "LensSpec") if tags.get(k) is not None), None)
         if higher is not None and higher != item.expected["lensModel"]:

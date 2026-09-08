@@ -172,12 +172,13 @@ class FilesTest(Workspace):
     def test_routes_and_bundle(self):
         names = TRIO + ["DJI_20251226075842_0001_D.MP4", "DJI_20251226075842_0001_D.WAV",
                         "DJI_20251226075842_0001_D.LRF", "DJI_20251226080057_0003_D.JPG",
-                        "VID_20250518_101759_00_001.mp4", "LRV_20250518_101759_01_001.mp4"]
+                        "VID_20250518_101759_00_001.mp4", "LRV_20250518_101759_01_001.mp4",
+                        "DJI_20251226075842_0001_D.AAC", "DJI_20251226080057_0003_D.DNG"]
         for name in names:
             self.put(name)
         plan = scan(self.source)
         routes = {i.path.name: i.route for i in plan.items}
-        self.assertEqual([routes[n] for n in names], ["archive", "archive", "timeline", "timeline", "companion", "ignored", "timeline", "timeline", "ignored"])
+        self.assertEqual([routes[n] for n in names], ["archive", "archive", "timeline", "timeline", "companion", "ignored", "timeline", "timeline", "ignored", "companion", "timeline"])
         self.assertFalse(plan.incomplete)
         self.assertEqual(len(plan.bundles[KEY]), 3)
 
@@ -224,27 +225,45 @@ class FilesTest(Workspace):
         self.assertFalse(plan.unknown)
         self.assertEqual(plan.skipped, [".hidden", "@eaDir", "sub/@eaDir"])
 
-    def test_single_lens_mp4_keeps_metadata_lens(self):
-        self.put("VID_20220404_231807_10_001.mp4")
-        self.put("LRV_20220404_231807_11_001.mp4")
+    def test_flat_mp4_channels_and_pro_variants(self):
+        names = ["VID_20220404_231807_10_001.mp4", "LRV_20220404_231807_11_001.mp4",
+                 "PRO_VID_20250518_154310_00_040.mp4", "PRO_LRV_20250518_154310_01_040.mp4",
+                 "VID_20250518_101759_00_001.mp4", "LRV_20250518_101759_01_001.mp4"]
+        for name in names:
+            self.put(name)
         plan = scan(self.source)
         routes = {i.path.name: i.route for i in plan.items}
-        self.assertEqual(routes, {"VID_20220404_231807_10_001.mp4": "timeline", "LRV_20220404_231807_11_001.mp4": "ignored"})
+        self.assertEqual([routes[n] for n in names], ["timeline", "ignored", "timeline", "ignored", "timeline", "ignored"])
         self.assertFalse(plan.bundles)
-        item = plan.assets[0]
-        self.assertEqual(item.expected, ONERS)
-        with patch("camera_importer.metadata.probe", return_value={"Make": "Insta360", "Model": "Insta360 OneRS", "LensModel": "5.7K 360 Lens"}):
-            prepare_metadata(item)
-        self.assertEqual(item.expected, dict(ONERS, lensModel="5.7K 360 Lens"))
-        self.assertIsNone(item.xmp)
-        item = scan(self.source).assets[0]
-        with patch("camera_importer.metadata.probe", return_value={"Make": "Insta360", "Model": "Insta360 OneRS", "LensModel": "Other"}):
-            prepare_metadata(item)
-        self.assertEqual(item.expected, ONERS)
-        item = scan(self.source).assets[0]
-        with patch("camera_importer.metadata.probe", return_value={"Make": "GoPro", "Model": "HERO"}):
-            with self.assertRaisesRegex(ImportFailure, "conflicts"):
-                prepare_metadata(item)
+        for item in plan.assets:
+            self.assertEqual(item.expected, dict(ONERS, lensModel="4K Boost Lens"))
+        self.assertIn("HDR/PRO", next(i.reason for i in plan.items if i.path.name.startswith("PRO_VID")))
+
+    def test_pro_360_bundle_and_pocket3_audio_raw(self):
+        pro = ["PRO_" + name for name in TRIO]
+        names = pro + ["DJI_20240317154525_0083_D.AAC", "DJI_20240317154525_0083_D.DNG"]
+        for name in names:
+            self.put(name)
+        plan = scan(self.source)
+        routes = {i.path.name: i.route for i in plan.items}
+        self.assertEqual([routes[n] for n in names], ["archive", "archive", "timeline", "companion", "timeline"])
+        self.assertEqual(list(plan.bundles), ["PRO_" + KEY])
+        self.assertFalse(plan.incomplete)
+        (self.source / pro[1]).unlink()
+        plan = scan(self.source)
+        self.assertEqual(plan.incomplete["PRO_" + KEY], [pro[1]])
+
+    def test_batch_probe_uses_one_exiftool_process(self):
+        fake = self.root / "exiftool"
+        fake.write_text("#!/bin/sh\necho 1 >> \"$0.calls\"\nprintf '['\nsep=''\nfor f in \"$@\"; do case \"$f\" in /*) printf '%s{\"SourceFile\":\"%s\",\"Make\":\"DJI\",\"Model\":\"DJI OsmoPocket3\"}' \"$sep\" \"$f\"; sep=',';; esac; done\nprintf ']'\n")
+        fake.chmod(0o755)
+        for index in range(3):
+            self.put("DJI_2025122607584" + str(index) + "_000" + str(index) + "_D.MP4")
+        from camera_importer.runner import build_plan
+        plan = build_plan(self.source, Config(exiftool_bin=str(fake)), lambda m: None)
+        self.assertEqual([i.status for i in plan.assets], ["planned"] * 3)
+        self.assertTrue(all(i.xmp is None for i in plan.assets))
+        self.assertEqual((self.root / "exiftool.calls").read_text().count("1"), 1)
 
     def test_duplicate_bundle_roles_fail(self):
         self.put("a/" + TRIO[0])
@@ -588,6 +607,28 @@ class IntegrationTest(Workspace):
         with self.assertRaisesRegex(ImportFailure, "302"):
             self.run_import()
         self.assertFalse(any(path == "/do-not-follow" for _, path in self.server.calls))
+
+    def test_check_config_reports_each_check_without_writes(self):
+        from camera_importer.runner import check_config
+        fake = self.root / "tool"
+        fake.write_text("#!/bin/sh\necho 13.59\n")
+        fake.chmod(0o755)
+        self.config.exiftool_bin = self.config.immich_bin = str(fake)
+        self.cli_patch.stop()  # Run the fake tools for real; restarted below for tearDown.
+        try:
+            report = check_config(self.source, self.config)
+            self.assertEqual(report["exitCode"], 0, report["errors"])
+            self.assertEqual([c["status"] for c in report["checks"]], ["ok"] * 7)
+            self.assertIn("13.59", report["checks"][3]["detail"])
+            self.assertFalse(self.config.companion_root.exists())
+            self.assertNotIn("test-secret", json.dumps(report))
+            self.config.exiftool_bin = str(self.root / "missing")
+            self.server.user_name = "Other"
+            report = check_config(self.source, self.config)
+            self.assertEqual(report["exitCode"], 1)
+            self.assertEqual([c["name"][:8] for c in report["checks"] if c["status"] == "failed"], ["exiftool", "Immich s"])
+        finally:
+            self.cli_patch.start()
 
     def test_wrong_user_or_version_aborts(self):
         self.server.user_name = "Other User"
