@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-import yaml
+import re
 
 from .model import ImportFailure
 
@@ -89,7 +89,7 @@ def authenticate(config):
         auth_path = config.auth_dir / "auth.yml"
         if auth_path.stat().st_size > 64 * 1024:
             raise ValueError()
-        auth = yaml.safe_load(auth_path.read_text(encoding="utf-8"))
+        auth = read_auth_scalars(auth_path.read_text(encoding="utf-8"))
         url = auth.get("url") or auth.get("instanceUrl")
         key = auth.get("key") or auth.get("apiKey")
         if not isinstance(url, str) or not isinstance(key, str) or not key:
@@ -100,5 +100,38 @@ def authenticate(config):
         config.api_url, config.api_key = url, key
     except ImportFailure:
         raise
-    except (OSError, ValueError, AttributeError, yaml.YAMLError):
+    except (OSError, ValueError, AttributeError):
         raise ImportFailure("Cannot read Immich CLI auth; use immich login or IMMICH_API_URL + IMMICH_API_KEY") from None
+
+
+def read_auth_scalars(text):
+    """Read the flat scalar mapping emitted by Immich CLI, without YAML code.
+
+    Complex YAML (anchors, tags, multiline values) is deliberately rejected.
+    Explicit environment credentials remain available for other auth formats.
+    """
+    result = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#") or line.strip() in ("---", "..."):
+            continue
+        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9_]*):[ \t]+(.*)", line)
+        if not match or match[1] in result:
+            raise ValueError("Unsupported auth format")
+        key, value = match.groups()
+        value = value.strip()
+        if value.startswith('"'):
+            value, end = json.JSONDecoder().raw_decode(value)
+            tail = match[2].strip()[end:].strip()
+            if tail and not tail.startswith("#"):
+                raise ValueError("Invalid quoted scalar")
+        elif value.startswith("'"):
+            quoted = re.fullmatch(r"'((?:[^']|'')*)'(?:[ \t]+#.*)?", value)
+            if not quoted:
+                raise ValueError("Invalid quoted scalar")
+            value = quoted[1].replace("''", "'")
+        else:
+            if not value or value[0] in "!&*|>{[":
+                raise ValueError("Unsupported YAML scalar")
+            value = re.split(r"[ \t]+#", value, maxsplit=1)[0].rstrip()
+        result[key] = value
+    return result

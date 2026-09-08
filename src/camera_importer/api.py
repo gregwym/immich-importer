@@ -1,15 +1,56 @@
 import base64
-import io
+import http.client
+import json as jsonlib
+import os
+from urllib.parse import urlsplit
 import subprocess
 import time
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
-import requests
-from requests_toolbelt.multipart.encoder import MultipartEncoder
 
 from .files import readonly
 from .model import ImportFailure
+
+
+
+class Multipart:
+    """Known-length multipart iterator; media is read in bounded blocks."""
+    def __init__(self, fields):
+        boundary = "camera-import-" + uuid4().hex
+        self.content_type = "multipart/form-data; boundary=" + boundary
+        self.parts = []
+        self.length = 0
+        for name, value in fields.items():
+            header = "--" + boundary + '\r\nContent-Disposition: form-data; name="' + name + '"'
+            if isinstance(value, tuple):
+                filename, body, mime = value
+                filename = filename.replace("%", "%25").replace('"', "%22").replace("\r", "%0D").replace("\n", "%0A")
+                header += '; filename="' + filename + '"\r\nContent-Type: ' + mime
+            else:
+                body = value.encode("utf-8")
+            header = (header + "\r\n\r\n").encode("utf-8")
+            size = len(body) if isinstance(body, bytes) else os.fstat(body.fileno()).st_size - body.tell()
+            self.parts.append((header, body, size))
+            self.length += len(header) + size + 2
+        self.tail = ("--" + boundary + "--\r\n").encode("ascii")
+        self.length += len(self.tail)
+
+    def __iter__(self):
+        for header, body, size in self.parts:
+            yield header
+            if isinstance(body, bytes):
+                yield body
+            else:
+                remaining = size
+                while remaining:
+                    block = body.read(min(1024 * 1024, remaining))
+                    if not block:
+                        raise ImportFailure("Source became shorter during upload")
+                    remaining -= len(block)
+                    yield block
+            yield b"\r\n"
+        yield self.tail
 
 
 def asset_id(value):
@@ -22,36 +63,45 @@ def asset_id(value):
 class Immich:
     def __init__(self, config, log=lambda message: None):
         self.config, self.log = config, log
-        self.session = requests.Session()
-        self.session.trust_env = False
-        self.session.headers["x-api-key"] = config.api_key
         self.owner_id = None
         self.media_types = set()
 
     def close(self):
-        self.session.close()
+        pass  # Each request owns and closes its connection.
 
-    def request(self, method, path, **kwargs):
+    def request(self, method, path, json=None, data=None, headers=None):
         self.log(method + " " + path)
+        url = urlsplit(self.config.api_url)
+        connection_type = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+        connection = connection_type(url.hostname, url.port, timeout=self.config.request_timeout)
+        outgoing = {"x-api-key": self.config.api_key}
+        outgoing.update(headers or {})
+        if json is not None:
+            data = jsonlib.dumps(json).encode("utf-8")
+            outgoing["Content-Type"] = "application/json"
+        if isinstance(data, Multipart):
+            outgoing["Content-Length"] = str(data.length)
+        elif data is not None:
+            outgoing["Content-Length"] = str(len(data))
         try:
-            response = self.session.request(method, self.config.api_url + path,
-                                            timeout=(15, self.config.request_timeout),
-                                            allow_redirects=False, **kwargs)
-        except requests.RequestException:
-            raise ImportFailure("Immich request failed or timed out: " + method + " " + path) from None
-        self.log("API status " + str(response.status_code))
-        try:
-            if not 200 <= response.status_code < 300:
-                # Never echo response bodies, URLs with secrets, or HTTP exceptions.
-                raise ImportFailure("Immich HTTP " + str(response.status_code) + ": " + method + " " + path)
-            if response.status_code == 204 or not response.content:
+            connection.request(method, url.path.rstrip("/") + path, body=data, headers=outgoing)
+            response = connection.getresponse()
+            self.log("API status " + str(response.status))
+            if not 200 <= response.status < 300:
+                raise ImportFailure("Immich HTTP " + str(response.status) + ": " + method + " " + path)
+            body = response.read(16 * 1024 * 1024 + 1)
+            if len(body) > 16 * 1024 * 1024:
+                raise ImportFailure("Immich JSON response exceeds size limit")
+            if response.status == 204 or not body:
                 return None
             try:
-                return response.json()
-            except ValueError:
+                return jsonlib.loads(body)
+            except (ValueError, UnicodeError):
                 raise ImportFailure("Immich returned invalid JSON: " + path) from None
+        except (OSError, http.client.HTTPException):
+            raise ImportFailure("Immich request failed or timed out: " + method + " " + path) from None
         finally:
-            response.close()
+            connection.close()
 
     def preflight(self):
         # CLI is used for the requested connection check, never for file upload.
@@ -117,8 +167,8 @@ class Immich:
                       "filename": item.path.name, "fileCreatedAt": timestamp,
                       "fileModifiedAt": timestamp, "visibility": item.route}
             if item.xmp is not None:
-                fields["sidecarData"] = (item.path.name + ".xmp", io.BytesIO(item.xmp), "application/rdf+xml")
-            encoder = MultipartEncoder(fields=fields)
+                fields["sidecarData"] = (item.path.name + ".xmp", item.xmp, "application/rdf+xml")
+            encoder = Multipart(fields)
             response = self.request("POST", "/assets", data=encoder,
                                     headers={"Content-Type": encoder.content_type})
         if not isinstance(response, dict) or response.get("status") not in ("created", "duplicate"):

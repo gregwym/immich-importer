@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -20,7 +21,7 @@ from uuid import uuid4
 from camera_importer import manifest
 from camera_importer.api import Immich
 from camera_importer.cli import main, parser
-from camera_importer.config import Config, authenticate, load_config
+from camera_importer.config import Config, authenticate, load_config, read_auth_scalars
 from camera_importer.files import archive_wav, hashes, readonly, snapshot, validate_roots
 from camera_importer.metadata import NS, make_xmp, prepare_metadata
 from camera_importer.model import ImportFailure
@@ -522,6 +523,25 @@ class IntegrationTest(Workspace):
 
 
 class AuthTest(unittest.TestCase):
+    def test_scalar_parser_quotes_comments_and_rejections(self):
+        self.assertEqual(read_auth_scalars("url: http://localhost/api # comment\nkey: 'abc''def'\n")["key"], "abc'def")
+        self.assertEqual(read_auth_scalars('key: "abc\\u0031" # comment\n')["key"], "abc1")
+        for value in ("key: &anchor secret", "key: !!str secret", "key: |\n  secret", "key: a\nkey: b"):
+            with self.assertRaises(ValueError):
+                read_auth_scalars(value)
+
+    def test_standalone_runs_without_site_packages_or_source_tree(self):
+        script = Path(__file__).resolve().parents[1] / "camera-import.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copyfile(script, root / "camera-import.py")
+            source = root / "card"
+            source.mkdir()
+            (source / "DJI_20251226075842_0001_D.WAV").write_bytes(b"audio")
+            result = subprocess.run([sys.executable, "-I", "-S", str(root / "camera-import.py"), "--dry-run", "--json", str(source)], capture_output=True, check=True, cwd=root)
+            self.assertEqual(json.loads(result.stdout)["result"], "DRY RUN OK")
+            self.assertEqual(len(list(root.iterdir())), 2)
+
     def test_read_cli_auth_and_reject_cross_server(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

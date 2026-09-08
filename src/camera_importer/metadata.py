@@ -3,7 +3,6 @@ import json
 import subprocess
 import xml.etree.ElementTree as ET
 
-from defusedxml.ElementTree import fromstring
 
 from .files import readonly, snapshot
 from .model import ImportFailure
@@ -89,7 +88,12 @@ def set_property(root, namespace, name, value):
 def make_xmp(expected, original=None):
     if original:
         try:
-            root = fromstring(original)
+            # Decode strictly before checking declarations, preventing UTF-16/NUL
+            # encodings from hiding entity definitions from the guard.
+            decoded = original.decode("utf-8-sig")
+            if "\x00" in decoded or "<!DOCTYPE" in decoded.upper() or "<!ENTITY" in decoded.upper():
+                raise ValueError("DTD and entity declarations are not allowed")
+            root = ET.fromstring(decoded)
         except Exception:
             raise ImportFailure("Invalid or unsafe source XMP") from None
     else:

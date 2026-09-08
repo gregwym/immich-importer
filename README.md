@@ -10,25 +10,27 @@ camera-import --verbose /some/history-folder
 camera-import --json /some/history-folder
 ```
 
-## 安装
+## DSM：无需 pip 的单文件脚本
 
-需要 Python **3.9+**、pip、Perl / **ExifTool**，以及已经登录的 Immich CLI。
+需要 Python **3.9+**、Perl / **ExifTool**，以及已经登录的 Immich CLI。没有任何第三方 Python 依赖。
 
-```sh
-git clone https://github.com/gregwym/immich-importer.git
-cd immich-importer
-python3 -m pip install --user .
-export PATH="$HOME/.local/bin:$PATH"
-camera-import --version
-```
-
-也支持不需要管理员权限的 virtualenv：
+只需下载仓库根目录的 [`camera-import.py`](camera-import.py)，放在素材目录之外：
 
 ```sh
-python3 -m venv "$HOME/.venvs/immich-importer"
-"$HOME/.venvs/immich-importer/bin/python" -m pip install .
-"$HOME/.venvs/immich-importer/bin/camera-import" --dry-run /some/folder
+python3 /path/to/camera-import.py --dry-run /volumeUSB1/usbshare/DCIM
+python3 /path/to/camera-import.py /volumeUSB1/usbshare/DCIM
+python3 /path/to/camera-import.py --verbose /some/history-folder
 ```
+
+脚本包含全部 importer 模块，直接在内存中加载；无需解压、安装包或把 `src` 目录一起复制。其他选项和配置与 `camera-import` 命令相同。
+
+若希望保留简短命令，可在 shell 配置中定义：
+
+```sh
+camera-import() { python3 /path/to/camera-import.py "$@"; }
+```
+
+有 pip 的环境仍可选择 `python3 -m pip install --user .` 安装命令入口，但 DSM 不需要此步骤。
 
 ExifTool 只用于**读取**媒体 metadata。可以使用已安装的 `exiftool`，或者把 [ExifTool 官方 Perl distribution](https://exiftool.org/install.html#Unix) 解压到用户可读目录，并配置可执行文件的绝对路径：
 
@@ -154,9 +156,13 @@ RESULT: SAFE TO REVIEW FOR CARD FORMAT
 ## 测试
 
 ```sh
-python3 -m unittest discover -s tests -v
+PYTHONPATH=src python3 -S -m unittest discover -s tests -v
 ```
 
 测试包含真实本地 HTTP multipart、checksum 去重、metadata 失败、visibility 修复、上传响应丢失后的恢复、WAV 冲突、manifest 冲突、源文件变化和 dry-run 零写入。设置 `EXIFTOOL_BIN` 或安装 ExifTool 可启用真实 XMP 解析测试。测试不会连接你的 Immich 或 NAS。
 
 当前验证范围是 **v3.1.0 源码契约 + 本地模拟服务 + 真实 ExifTool**，不是对真实 Pocket 3 / ONE RS 素材和 DSM 的端到端验收。服务端版本不匹配会明确停止。
+
+单文件脚本由 `python3 tools/build_standalone.py` 从 `src` 生成。CI 会检查生成结果与源码一致，并在 `python -S`（不加载 site-packages）的环境下运行全部测试。
+
+CLI 的 `auth.yml` 使用无依赖的严格标量解析器，支持普通值、单/双引号和注释；复杂 YAML（锚点、标签、多行值）明确拒绝，可改用环境变量凭据。XMP 使用标准库 XML 解析，拒绝 DTD、实体声明和非 UTF-8 输入，避免隐式外部资源读取。

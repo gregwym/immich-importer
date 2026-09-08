@@ -7,7 +7,7 @@ name = "immich-camera-importer"
 version = "0.1.0"
 description = "Read-only camera imports into Immich with verified metadata and companion archives"
 requires-python = ">=3.9"
-dependencies = ["requests>=2.31,<3", "requests-toolbelt>=1,<2", "PyYAML>=6,<7", "defusedxml>=0.7,<1"]
+dependencies = []
 
 [project.scripts]
 camera-import = "camera_importer.cli:main"
