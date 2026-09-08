@@ -14,6 +14,9 @@ class Item:
     route: str
     reason: str
     expected: Dict[str, str] = field(default_factory=dict)
+    embedded: Dict[str, str] = field(default_factory=dict)
+    stack: Optional[str] = None
+    stack_id: Optional[str] = None
     bundle: Optional[str] = None
     role: Optional[str] = None
     date: Optional[str] = None
@@ -31,7 +34,8 @@ class Item:
 
     def public(self):
         return {"path": self.relative, "route": self.route, "reason": self.reason,
-                "expectedMetadata": self.expected, "bundleKey": self.bundle,
+                "expectedMetadata": self.expected, "embeddedMetadata": self.embedded,
+                "stackKey": self.stack, "stackId": self.stack_id, "bundleKey": self.bundle,
                 "role": self.role, "size": self.size, "sha1": self.sha1,
                 "sha256": self.sha256, "assetId": self.asset_id,
                 "status": self.status, "verified": self.verified,
@@ -51,6 +55,15 @@ class Plan:
     @property
     def assets(self):
         return [i for i in self.items if i.route in ("timeline", "archive")]
+
+    @property
+    def stacks(self):
+        """RAW + JPEG/INSP pairs keyed by the primary (rendered) photo."""
+        groups = {}
+        for item in self.items:
+            if item.stack:
+                groups.setdefault(item.stack, []).append(item)
+        return groups
 
     @property
     def unknown(self):

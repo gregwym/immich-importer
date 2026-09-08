@@ -46,8 +46,13 @@ def display(report):
                 for item in report["items"]:
                     if item["route"] == route:
                         print("  + " + item["path"])
-                        if item["expectedMetadata"] and route in ("timeline", "archive"):
-                            print("    " + json.dumps(item["expectedMetadata"], ensure_ascii=False))
+                        if route in ("timeline", "archive"):
+                            print("    embedded " + json.dumps(item["embeddedMetadata"], ensure_ascii=False))
+                            print("    expected " + json.dumps(item["expectedMetadata"], ensure_ascii=False)
+                                  + (" -> XMP sidecar" if item["xmpPrepared"] else " (as-is)")
+                                  + ("; stack with " + item["stackKey"] if item["stackKey"] and item["stackKey"] != item["path"] else ""))
+                        if item.get("error"):
+                            print("    ERROR " + item["error"])
         for route, counts in report["counts"].items():
             print("\n" + route + ": " + (", ".join(k + "=" + str(v) for k, v in counts.items()) or "0"))
         print("\nCamera metadata: " + json.dumps(report["cameraMetadata"]))
@@ -61,6 +66,7 @@ def display(report):
             for name in missing:
                 print("    Missing: " + name)
         print("Ignored: " + json.dumps(report["ignored"]))
+        print("RAW+JPEG stacks: " + str(len(report.get("stacks", {}))))
         print("Skipped hidden directories: " + str(len(report["skippedDirectories"])))
         for path in report["skippedDirectories"]:
             print("  SKIPPED: " + path)

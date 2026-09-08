@@ -175,6 +175,42 @@ class Immich:
             raise ImportFailure("Unrecognized Immich upload response")
         return asset_id(response.get("id")), response["status"]
 
+    def stack(self, identifier):
+        value = self.request("GET", "/stacks/" + asset_id(identifier))
+        if not isinstance(value, dict) or not isinstance(value.get("assets"), list):
+            raise ImportFailure("Invalid stack response")
+        return value
+
+    def ensure_stack(self, primary, children):
+        """Group a rendered photo with its RAW so the timeline shows one asset.
+
+        Returns the stack ID. Existing stacks are only accepted when they already
+        contain every member with the rendered photo as primary; nothing is
+        deleted or re-stacked automatically.
+        """
+        wanted = {primary.asset_id} | {c.asset_id for c in children}
+        existing = {}
+        for item in (primary, *children):
+            stack = self.info(item.asset_id).get("stack")
+            if stack is not None:
+                if not isinstance(stack, dict):
+                    raise ImportFailure("Invalid stack field in asset response")
+                existing[item.relative] = asset_id(stack.get("id"))
+        if not existing:
+            response = self.request("POST", "/stacks", json={"assetIds": [primary.asset_id] + [c.asset_id for c in children]})
+            if not isinstance(response, dict):
+                raise ImportFailure("Invalid stack creation response")
+            stack_id = asset_id(response.get("id"))
+        elif len(set(existing.values())) == 1:
+            stack_id = next(iter(existing.values()))
+        else:
+            raise ImportFailure("STACK CONFLICT: RAW and rendered photo are in different stacks")
+        stack = self.stack(stack_id)
+        members = {asset_id(a.get("id")) for a in stack["assets"] if isinstance(a, dict)}
+        if stack.get("primaryAssetId") != primary.asset_id or not wanted <= members:
+            raise ImportFailure("STACK CONFLICT: existing stack does not match the RAW/rendered pair")
+        return stack_id
+
     def info(self, identifier):
         value = self.request("GET", "/assets/" + asset_id(identifier))
         if not isinstance(value, dict):

@@ -85,6 +85,7 @@ def summarize(plan, config, dry_run, metadata_verify, manifests=0):
                         "manifestsWrittenOrVerified": manifests},
             "ignored": dict(Counter(i.reason for i in plan.items if i.route == "ignored")),
             "skippedDirectories": list(plan.skipped),
+            "stacks": {key: [m.relative for m in members] for key, members in plan.stacks.items()},
             "unknown": [i.relative for i in plan.unknown], "errors": errors,
             "items": [i.public() for i in plan.items]}
 
@@ -233,6 +234,20 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                     log(item.relative + ": " + item.status)
                 except (OSError, ImportFailure) as error:
                     fail(item, error)
+            for key, members in plan.stacks.items():
+                if any(m.error or not m.asset_id for m in members):
+                    continue
+                primary = next(m for m in members if m.relative == key)
+                children = [m for m in members if m is not primary]
+                progress("stack: " + key)
+                try:
+                    stack_id = api.ensure_stack(primary, children)
+                    for member in members:
+                        member.stack_id = stack_id
+                    log("Stacked " + key + " with " + ", ".join(c.relative for c in children))
+                except (OSError, ImportFailure) as error:
+                    for member in members:
+                        fail(member, error)
             for key, members in plan.bundles.items():
                 if len({m.role for m in members}) != len(members):
                     continue

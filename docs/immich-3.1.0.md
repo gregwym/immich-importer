@@ -18,6 +18,16 @@ Paths below are relative to the configured `/api` URL.
 | `GET /assets/{id}` | `id`, `ownerId`, base64 SHA-1 `checksum`, `visibility`, `libraryId`, `isTrashed`, `isOffline`, `exifInfo` |
 | `PUT /assets/{id}` | Update only `visibility`, then verify |
 | `POST /assets/jobs` | `{assetIds: [...], name: "refresh-metadata"}` |
+| `POST /stacks` | `{assetIds: [primary, ...]}`; the first ID becomes `primaryAssetId`. Used once per RAW + rendered pair |
+| `GET /stacks/{id}` | `id`, `primaryAssetId`, `assets[]`; confirms membership and primary after creation or on rerun |
+
+`GET /assets/{id}` also exposes `stack` (`id`, `primaryAssetId`, `assetCount`)
+or `null`. The timeline lists only stack primaries, so a RAW (`.dng`) stacked
+under its rendered JPEG/INSP does not appear as a second photo. Existing stacks
+are accepted only when they already contain the whole pair with the rendered
+file as primary; a mismatch is reported as `STACK CONFLICT` and nothing is
+re-stacked or deleted. Stack operations need the `stack.create` and
+`stack.read` API key permissions.
 
 Upload returns `{id, status}`, where `status` is `created` or `duplicate`.
 On successful new upload, the service associates `sidecarData` as an

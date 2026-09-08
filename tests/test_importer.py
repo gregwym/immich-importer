@@ -37,6 +37,7 @@ class FakeServer:
     """HTTP contract fixture, not a claim of a real Immich integration test."""
     def __init__(self):
         self.assets, self.uploads, self.calls = {}, [], []
+        self.stacks = {}
         self.ignore_sidecar = False
         self.upload_failure = False
         self.drop_response = False
@@ -76,10 +77,16 @@ class FakeServer:
                 if self.path == "/api/server/media-types":
                     return self.reply({"image": [".jpg", ".jpeg", ".dng", ".insp"], "video": [".mp4", ".insv"], "sidecar": [".xmp"]})
                 identifier = self.path.rsplit("/", 1)[-1]
+                if self.path.startswith("/api/stacks/") and identifier in state.stacks:
+                    stack = state.stacks[identifier]
+                    return self.reply({"id": identifier, "primaryAssetId": stack[0],
+                                       "assets": [state.assets[a]["info"] for a in stack]})
                 if identifier in state.assets:
                     asset = dict(state.assets[identifier]["info"])
                     if state.bad_checksum:
                         asset["checksum"] = base64.b64encode(b"bad").decode()
+                    stack = next((s for s, members in state.stacks.items() if identifier in members), None)
+                    asset["stack"] = {"id": stack, "primaryAssetId": state.stacks[stack][0], "assetCount": len(state.stacks[stack])} if stack else None
                     return self.reply(asset)
                 return self.reply({}, 404)
 
@@ -95,6 +102,12 @@ class FakeServer:
                             result.update(assetId=found["id"], isTrashed=found["isTrashed"], reason="duplicate")
                         results.append(result)
                     return self.reply({"results": results})
+                if self.path == "/api/stacks":
+                    ids = json.loads(body)["assetIds"]
+                    identifier = str(uuid4())
+                    state.stacks[identifier] = list(ids)
+                    return self.reply({"id": identifier, "primaryAssetId": ids[0],
+                                       "assets": [state.assets[a]["info"] for a in ids]}, 201)
                 if self.path == "/api/assets/jobs":
                     for identifier in json.loads(body)["assetIds"]:
                         asset = state.assets[identifier]
@@ -352,8 +365,38 @@ class FilesTest(Workspace):
         item = scan(self.source).items[0]
         with patch("camera_importer.metadata.probe", return_value={"Make": "Insta360", "Model": "Insta360 ONE RS", "FileType": "JPEG"}):
             prepare_metadata(item)
-        self.assertEqual(item.expected, ONERS)
+        # Camera-written EXIF is kept verbatim and verified as-is; no XMP rewrite.
+        self.assertEqual(item.expected, {"make": "Insta360", "model": "Insta360 ONE RS"})
+        self.assertEqual(item.embedded, {"make": "Insta360", "model": "Insta360 ONE RS"})
+        self.assertIsNone(item.xmp)
         self.assertEqual(item.route, "timeline")
+
+    def test_photo_without_embedded_camera_gets_xmp_but_video_is_normalized(self):
+        self.put("DJI_20251226075842_0001_D.JPG")
+        self.put("DJI_20251226075842_0001_D.MP4")
+        plan = scan(self.source)
+        photo, video = (next(i for i in plan.items if i.path.suffix == suffix) for suffix in (".JPG", ".MP4"))
+        with patch("camera_importer.metadata.probe", return_value={"Make": "DJI", "Model": "OsmoPocket3"}):
+            prepare_metadata(photo)
+            prepare_metadata(video)
+        self.assertIsNone(photo.xmp)
+        self.assertEqual(photo.expected, {"make": "DJI", "model": "OsmoPocket3"})
+        self.assertIsNotNone(video.xmp)
+        self.assertEqual(video.expected, POCKET)
+        self.assertEqual(video.embedded, {"make": "DJI", "model": "OsmoPocket3"})
+        photo = scan(self.source).items[0]
+        with patch("camera_importer.metadata.probe", return_value={"FileType": "JPEG"}):
+            prepare_metadata(photo)
+        self.assertIsNotNone(photo.xmp)
+        self.assertEqual(photo.expected, POCKET)
+
+    def test_raw_and_rendered_pairs_form_stacks(self):
+        for name in ["DJI_20251226080057_0003_D.JPG", "DJI_20251226080057_0003_D.DNG", "IMG_20250518_101759_00_001.jpg",
+                     "IMG_20250518_101759_00_001.dng", "DJI_20251226080058_0004_D.DNG", "other/IMG_20250518_101759_00_001.dng"]:
+            self.put(name)
+        plan = scan(self.source)
+        self.assertEqual(plan.stacks.keys(), {"DJI_20251226080057_0003_D.JPG", "IMG_20250518_101759_00_001.jpg"})
+        self.assertEqual({i.path.name for i in plan.items if not i.stack}, {"DJI_20251226080058_0004_D.DNG", "IMG_20250518_101759_00_001.dng"})
 
     def test_wrong_camera_is_not_renamed(self):
         self.put("DJI_20251226075842_0001_D.MP4")
@@ -488,6 +531,29 @@ class IntegrationTest(Workspace):
         members = {m["role"]: m for m in json.loads((self.config.manifest_root / "insta360" / (KEY + ".json")).read_text())["members"]}
         self.assertEqual(members["master-00"]["visibility"], "timeline")
         self.assertEqual(members["lrv-11"]["visibility"], "timeline")
+
+    def test_raw_pair_is_stacked_once_and_verified_on_rerun(self):
+        self.put("DJI_20251226080057_0003_D.JPG")
+        self.put("DJI_20251226080057_0003_D.DNG")
+        self.put("DJI_20251226080058_0004_D.JPG")
+        first = self.run_import()
+        self.assertEqual(first["exitCode"], 0, first["errors"])
+        self.assertEqual(len(self.server.stacks), 1)
+        names = {self.server.assets[a]["info"]["originalFileName"]: a for a in next(iter(self.server.stacks.values()))}
+        self.assertEqual(list(names)[0], "DJI_20251226080057_0003_D.JPG")
+        self.assertEqual(first["stacks"], {"DJI_20251226080057_0003_D.JPG": ["DJI_20251226080057_0003_D.DNG", "DJI_20251226080057_0003_D.JPG"]})
+        stacked = [i for i in first["items"] if i["stackId"]]
+        self.assertEqual(len(stacked), 2)
+        second = self.run_import()
+        self.assertEqual(second["exitCode"], 0, second["errors"])
+        self.assertEqual(len(self.server.stacks), 1)
+        self.assertEqual(sum(1 for m, path in self.server.calls if (m, path) == ("POST", "/api/stacks")), 1)
+        # A foreign stack containing only the RAW is a conflict, never silently merged.
+        self.server.stacks[str(uuid4())] = [names["DJI_20251226080057_0003_D.DNG"]]
+        del self.server.stacks[next(iter(self.server.stacks))]
+        third = self.run_import()
+        self.assertEqual(third["exitCode"], 1)
+        self.assertTrue(any("STACK CONFLICT" in e for e in third["errors"]))
 
     def test_rerun_fills_missing_manifest_asset_id(self):
         for name in TRIO:

@@ -149,6 +149,18 @@ def scan(source):
             plan.errors.append("AMBIGUOUS 360 BUNDLE (duplicate roles): " + key)
             for member in members:
                 member.error = "Duplicate bundle role; needs review"
+    # RAW + rendered pairs (DJI_x.JPG + DJI_x.DNG, IMG_x.jpg/insp + IMG_x.dng) are
+    # one photo: the rendered file leads an Immich stack and the RAW joins it.
+    pairs = {}
+    for item in plan.items:
+        if item.route in ("timeline", "probe") and item.path.suffix.lower() in (".jpg", ".jpeg", ".insp", ".dng"):
+            pairs.setdefault((item.path.parent, item.path.stem.lower()), []).append(item)
+    for members in pairs.values():
+        raws = [m for m in members if m.path.suffix.lower() == ".dng"]
+        rendered = [m for m in members if m.path.suffix.lower() != ".dng"]
+        if len(raws) == 1 and len(rendered) == 1:
+            for member in members:
+                member.stack = rendered[0].relative
     # Multiple same-format photo members may form an undocumented photo bundle.
     photo_groups = {}
     for item in plan.items:

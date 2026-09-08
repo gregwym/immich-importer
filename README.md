@@ -97,7 +97,8 @@ immich server-info
 
 | 素材 | 目的地 | Camera / Lens |
 |---|---|---|
-| Pocket 3 `DJI_...JPG/JPEG/DNG/MP4` | Immich timeline | DJI / DJI OsmoPocket3；保留原镜头字段 |
+| Pocket 3 `DJI_...MP4` | Immich timeline | DJI / DJI OsmoPocket3；保留原镜头字段 |
+| Pocket 3 `DJI_...JPG/JPEG/DNG` | Immich timeline；同名 JPG + DNG 组成一个 Immich stack，JPG 为主 | 保留照片自带 EXIF；无 EXIF 时写 DJI / DJI OsmoPocket3 |
 | Pocket 3 `DJI_...WAV/AAC` | Companion archive，SHA-256 验证 | filename 日期 |
 | Pocket 3 `DJI_...LRF` | 明确忽略，源文件保留 | — |
 | ONE RS `VID_..._00/10_....mp4`、`PRO_VID_..._00/10_....mp4`（HDR/PRO） | Immich timeline | Insta360 / Insta360 OneRS / 4K Boost Lens |
@@ -105,7 +106,7 @@ immich server-info
 | ONE RS `VID_..._00_....insv`、`PRO_VID_..._00_....insv` | Immich archive；bundle 缺少 LRV 时改为 timeline | Insta360 / Insta360 OneRS / 5.7K 360 Lens |
 | ONE RS `VID_..._10_....insv`、`PRO_VID_..._10_....insv` | Immich archive | 同上 |
 | ONE RS `LRV_..._11_....insv`、`PRO_LRV_..._11_....insv` | Immich timeline | 同上 |
-| 明确可独立保存的 INSP / JPEG / DNG（含 HDR 包围曝光的多张 `IMG_` 原片） | Immich timeline | 必须由 metadata 确认机型；不猜镜头 |
+| 明确可独立保存的 INSP / JPEG / DNG（含 HDR 包围曝光的多张 `IMG_` 原片） | Immich timeline；同名 JPG/INSP + DNG 组成一个 stack | 必须由 metadata 确认机型；保留照片自带 EXIF |
 | `Thumb/` 内 JPG/JPEG/PNG/BMP/THM | 明确忽略，源文件保留 | 不把任意 Thumb 子文件都当缓存 |
 | `@` 或 `.` 开头的目录（DSM `@eaDir`、`@Recycle`、`.hidden`） | 整个目录跳过，不进入、不分类 | 报告中列为 skipped |
 | 其他文件、symlink、特殊文件 | UNKNOWN / NEEDS REVIEW | 最终失败，保留源文件 |
@@ -120,11 +121,14 @@ immich server-info
 
 ## Metadata 和 XMP
 
-1. 读取媒体的 Make / Model / Lens 字段。
-2. 已有正确的 embedded metadata 不额外生成 XMP；缺失或需要统一时生成标准 XMP。
-3. `tiff:Make` / `tiff:Model` 保存指定字符串；镜头用 **`exifEX:LensModel`**。
-4. 小型 XMP 在内存中生成，作为 multipart `sidecarData` 和原媒体 `assetData` **同一请求上传**。XMP part 文件名是 `original.ext.xmp`。媒体由文件句柄流式发送，不复制到 staging，也不整体载入内存。
-5. API 读取 asset，验证 owner、SHA-1、managed-library 身份、visibility 和相机字段；请求 `refresh-metadata`，限时轮询到期望值。
+1. 读取媒体的 Make / Model / Lens 字段。dry-run 和 report 中每个文件都显示 `embedded`（文件自带）与 `expected`（导入后验证的目标值），以及是否生成 XMP。
+2. **照片尊重原始 EXIF。** JPG / JPEG / DNG / INSP 只要自带 Make 和 Model（且与文件名判断的机型不冲突），就原样保留、不生成 XMP，验证时以自带值为准。只有缺少 Make / Model 的照片才写标准 XMP。
+3. **XMP 用于给视频补充相机信息。** MP4 / INSV 的 embedded 值与目标字符串（`DJI OsmoPocket3`、`Insta360 OneRS` 加镜头）不一致时生成 XMP；已一致则不生成。
+4. `tiff:Make` / `tiff:Model` 保存指定字符串；镜头用 **`exifEX:LensModel`**。
+5. 小型 XMP 在内存中生成，作为 multipart `sidecarData` 和原媒体 `assetData` **同一请求上传**。XMP part 文件名是 `original.ext.xmp`。媒体由文件句柄流式发送，不复制到 staging，也不整体载入内存。
+6. API 读取 asset，验证 owner、SHA-1、managed-library 身份、visibility 和相机字段；请求 `refresh-metadata`，限时轮询到期望值。
+
+**RAW + JPG 成对导入。** 同一目录下同名的 `JPG/JPEG/INSP` 与 `DNG` 视为同一张照片：两者都上传到 timeline，然后调用 `POST /stacks` 组成一个 Immich stack，JPG 为主图，DNG 作为堆叠版本。Immich 时间线只显示 stack 主图，所以不会出现重复；打开照片可切换到 RAW。重复运行会核对已有 stack；如果 RAW 或 JPG 已在别的 stack 里，报 `STACK CONFLICT` 并失败，不自动拆并。单独的 DNG（没有同名 JPG）按普通照片进 timeline。API key 需要 `stack.create`、`stack.read` 权限。
 
 源目录中的已有关联 XMP 会安全解析并合并，只更改要求标准化的相机属性，其他属性保留。同时存在两种候选命名、多个媒体共用一个 sidecar、无效 XML 或过大的 XMP 会报错。孤立 XMP 仍是 UNKNOWN。
 
@@ -172,7 +176,7 @@ camera-import --check-config --companion-root /volume1/immich/companions --manif
 
 默认复用 `~/.config/immich/auth.yml` 中的 `url` / `key`，兼容旧 `instanceUrl` / `apiKey`。覆盖 API URL 时，若地址与 CLI 登录地址不一致，必须显式给对应 key，避免把旧 key 发给另一台服务器。API key 不接受写进项目 JSON、不放在命令行或日志中。
 
-账户需具备相应的 API 权限：`user.read`、`server.about`、`asset.statistics`（CLI server-info）、`asset.upload`、`asset.read`、`asset.update`、`job.create`（metadata refresh）。以服务器的权限设置为准；权限不足明确失败。Storage Label `camera` 和 Storage Template 由 Immich 自己设置和维护。
+账户需具备相应的 API 权限：`user.read`、`server.about`、`asset.statistics`（CLI server-info）、`asset.upload`、`asset.read`、`asset.update`、`job.create`（metadata refresh）、`stack.create`、`stack.read`（RAW + JPG stack）。以服务器的权限设置为准；权限不足明确失败。Storage Label `camera` 和 Storage Template 由 Immich 自己设置和维护。
 
 | 选项 | 行为 |
 |---|---|

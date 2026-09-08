@@ -16,6 +16,7 @@ for prefix, uri in NS.items():
     ET.register_namespace(prefix, uri)
 
 
+PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".dng", ".insp")
 TAGS = ["-Make", "-Model", "-LensID", "-LensType", "-LensSpec", "-LensModel", "-Lens", "-FileType",
         "-NumberOfImages", "-ProjectionType", "-Error", "-Warning"]
 BATCH = 50
@@ -162,6 +163,15 @@ def prepare_metadata(item, executable="exiftool", tags=None):
         identify_photo(item, tags)
     else:
         confirm_camera(tags, {k: v for k, v in item.expected.items() if k != "lensModel"})
+    actual = {"make": tags.get("Make"), "model": tags.get("Model")}
+    actual["lensModel"] = next((tags[k] for k in ("LensID", "LensType", "LensSpec", "LensModel") if tags.get(k) is not None), None)
+    item.embedded = {k: str(v) for k, v in actual.items() if v not in (None, "")}
+    if item.path.suffix.lower() in PHOTO_EXTENSIONS and not item.sidecar and item.embedded.get("make") and item.embedded.get("model"):
+        # Photos carry camera EXIF that Immich reads directly: keep it verbatim
+        # and verify against it. XMP exists to enrich videos, not to rewrite photos.
+        item.expected = {"make": item.embedded["make"], "model": item.embedded["model"]}
+        item.reason += "; embedded EXIF kept"
+        return
     if "lensModel" in item.expected:
         higher = next((tags[k] for k in ("LensID", "LensType", "LensSpec") if tags.get(k) is not None), None)
         if higher is not None and higher != item.expected["lensModel"]:
@@ -172,8 +182,6 @@ def prepare_metadata(item, executable="exiftool", tags=None):
             original = stream.read(8 * 1024 * 1024 + 1)
         if len(original) > 8 * 1024 * 1024:
             raise ImportFailure("Source XMP exceeds 8 MiB review limit")
-    actual = {"make": tags.get("Make"), "model": tags.get("Model")}
-    actual["lensModel"] = next((tags[k] for k in ("LensID", "LensType", "LensSpec", "LensModel") if tags.get(k) is not None), None)
     # Existing sidecars may override source camera fields; always normalize their
     # camera properties. Already-correct embedded metadata needs no synthetic XMP.
     if original or any(actual.get(k) != v for k, v in item.expected.items()):
