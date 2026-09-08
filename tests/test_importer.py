@@ -44,6 +44,8 @@ class FakeServer:
         self.redirect = False
         self.bad_visibility = False
         self.bad_checksum = False
+        self.forbid_jobs = False
+        self.quota_exceeded = False
         self.user_name = "Camera Archive"
         self.version = {"major": 3, "minor": 1, "patch": 0}
         self.on_upload = lambda: None
@@ -109,6 +111,8 @@ class FakeServer:
                     return self.reply({"id": identifier, "primaryAssetId": ids[0],
                                        "assets": [state.assets[a]["info"] for a in ids]}, 201)
                 if self.path == "/api/assets/jobs":
+                    if state.forbid_jobs:
+                        return self.reply({"message": "Missing required permission: job.create", "error": "Forbidden", "statusCode": 403}, 403)
                     for identifier in json.loads(body)["assetIds"]:
                         asset = state.assets[identifier]
                         if not state.ignore_sidecar and asset["xmp"]:
@@ -122,9 +126,21 @@ class FakeServer:
                 if self.path == "/api/assets":
                     if state.upload_failure:
                         return self.reply({"error": "test-secret must not leak"}, 500)
+                    if state.quota_exceeded:
+                        return self.reply({"message": "Quota has been exceeded!", "error": "Bad Request", "statusCode": 400}, 400)
                     message = BytesParser(policy=default).parsebytes(
                         ("Content-Type: " + self.headers["Content-Type"] + "\r\nMIME-Version: 1.0\r\n\r\n").encode() + body)
-                    fields = {p.get_param("name", header="content-disposition"): (p.get_filename(), p.get_payload(decode=True)) for p in message.iter_parts()}
+                    fields = {}
+                    for part in message.iter_parts():
+                        name = part.get_param("name", header="content-disposition")
+                        fields[name] = (part.get_filename(), part.get_payload(decode=True))
+                        # v3.1.0 canUploadFile: every file part is checked against
+                        # body.filename (if already parsed) or its own filename.
+                        if name in ("assetData", "sidecarData"):
+                            checked = fields["filename"][1].decode() if "filename" in fields else part.get_filename()
+                            ok = checked.lower().endswith(".xmp") if name == "sidecarData" else checked.lower().endswith((".mp4", ".insv", ".jpg", ".jpeg", ".dng", ".insp"))
+                            if not ok:
+                                return self.reply({"message": "Unsupported file type " + checked, "error": "Bad Request", "statusCode": 400}, 400)
                     filename, media = fields["assetData"]
                     xmp = fields.get("sidecarData", (None, None))[1]
                     checksum = base64.b64encode(hashlib.sha1(media).digest()).decode()
@@ -494,6 +510,7 @@ class IntegrationTest(Workspace):
         self.assertEqual(self.server.assets[primary]["info"]["originalFileName"], TRIO[2])
         self.assertEqual({a["info"]["visibility"] for a in self.server.assets.values()}, {"timeline"})
         for upload in self.server.uploads:
+            self.assertNotIn("filename", upload)
             self.assertEqual(upload["sidecarData"][0], upload["assetData"][0] + ".xmp")
             self.assertEqual(upload["assetData"][1], before[upload["assetData"][0]][0])
         manifest_path = self.config.manifest_root / "insta360" / (KEY + ".json")
@@ -655,6 +672,33 @@ class IntegrationTest(Workspace):
         self.put("DJI_20251226075842_0001_D.MP4")
         self.server.on_upload = lambda: self.put("new.NEW")
         self.assertEqual(self.run_import()["exitCode"], 1)
+
+    def test_server_message_is_reported_but_other_fields_are_not(self):
+        self.put("DJI_20251226075842_0001_D.MP4")
+        self.server.quota_exceeded = True
+        report = self.run_import()
+        self.assertEqual(report["exitCode"], 1)
+        self.assertTrue(any("HTTP 400: POST /assets (Quota has been exceeded!)" in e for e in report["errors"]), report["errors"])
+        self.assertNotIn("Bad Request", json.dumps(report))
+
+    def test_missing_job_permission_is_a_warning_when_extraction_matches(self):
+        self.put("DJI_20251226075842_0001_D.MP4")
+        self.server.forbid_jobs = True
+        # Without the refresh job the fake server never applies the sidecar: verification must fail.
+        report = self.run_import()
+        self.assertEqual(report["exitCode"], 1)
+        self.assertTrue(any("job.create" in w for w in report["warnings"]))
+        self.assertTrue(any("timed out" in e for e in report["errors"]))
+        # A photo whose embedded EXIF already matches needs no refresh at all.
+        self.put("DJI_20251226075842_0001_D.MP4", b"")
+        os.unlink(self.source / "DJI_20251226075842_0001_D.MP4")
+        self.put("DJI_20251226080057_0003_D.JPG")
+        with patch("camera_importer.runner.probe_batch", side_effect=lambda paths, exe: {p: {"Make": "DJI", "Model": "PP-101", "FileType": "JPEG"} for p in paths}):
+            self.server.on_upload = lambda: [a["info"].__setitem__("exifInfo", {"make": "DJI", "model": "PP-101"}) for a in self.server.assets.values()]
+            report = self.run_import()
+        self.assertEqual(report["exitCode"], 0, report["errors"])
+        self.assertEqual(report["warnings"], ["Metadata refresh not permitted (API key lacks job.create); verified Immich's own extraction instead"])
+        self.assertEqual(report["cameraMetadata"]["verified"], 1)
 
     def test_upload_failure_does_not_leak_secret(self):
         self.put("DJI_20251226075842_0001_D.MP4")

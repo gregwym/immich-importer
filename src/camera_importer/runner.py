@@ -56,7 +56,7 @@ def build_plan(source, config, log, progress=QUIET):
     return plan
 
 
-def summarize(plan, config, dry_run, metadata_verify, manifests=0):
+def summarize(plan, config, dry_run, metadata_verify, manifests=0, warnings=()):
     errors = list(plan.errors)
     errors.extend(i.relative + ": " + i.error for i in plan.items if i.error)
     if plan.unknown:
@@ -86,7 +86,7 @@ def summarize(plan, config, dry_run, metadata_verify, manifests=0):
             "ignored": dict(Counter(i.reason for i in plan.items if i.route == "ignored")),
             "skippedDirectories": list(plan.skipped),
             "stacks": {key: [m.relative for m in members] for key, members in plan.stacks.items()},
-            "unknown": [i.relative for i in plan.unknown], "errors": errors,
+            "unknown": [i.relative for i in plan.unknown], "errors": errors, "warnings": list(warnings),
             "items": [i.public() for i in plan.items]}
 
 
@@ -276,13 +276,13 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
             final_scan = scan(source)
             if final_scan.errors or {i.relative for i in final_scan.items} != {i.relative for i in plan.items}:
                 plan.errors.append("Source directory changed or became unreadable during import")
-            report = summarize(plan, config, False, metadata_verify, written)
+            report = summarize(plan, config, False, metadata_verify, written, api.warnings)
             run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex
             try:
                 atomic_json(config.manifest_root / "runs" / (run_id + ".json"), report)
             except (OSError, ImportFailure):
                 plan.errors.append("Failed to persist run report")
-                report = summarize(plan, config, False, metadata_verify, written)
+                report = summarize(plan, config, False, metadata_verify, written, api.warnings)
             return report
     finally:
         if api:

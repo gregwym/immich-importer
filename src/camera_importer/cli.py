@@ -73,6 +73,8 @@ def display(report):
         print("Unknown: " + str(len(report["unknown"])))
         for path in report["unknown"]:
             print("  UNKNOWN FILE: " + path)
+    for warning in report.get("warnings", []):
+        print("WARNING: " + warning)
     for error in report.get("errors", []):
         print("ERROR: " + error)
     print("\nRESULT: " + report["result"])

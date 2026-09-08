@@ -175,7 +175,7 @@ camera-import --check-config --companion-root /volume1/immich/companions --manif
 
 默认复用 `~/.config/immich/auth.yml` 中的 `url` / `key`，兼容旧 `instanceUrl` / `apiKey`。覆盖 API URL 时，若地址与 CLI 登录地址不一致，必须显式给对应 key，避免把旧 key 发给另一台服务器。API key 不接受写进项目 JSON、不放在命令行或日志中。
 
-账户需具备相应的 API 权限：`user.read`、`server.about`、`asset.statistics`（CLI server-info）、`asset.upload`、`asset.read`、`asset.update`、`job.create`（metadata refresh）、`stack.create`、`stack.read`、`stack.delete`（RAW + JPG 与 360 bundle stack）。以服务器的权限设置为准；权限不足明确失败。Storage Label `camera` 和 Storage Template 由 Immich 自己设置和维护。
+账户需具备相应的 API 权限：`user.read`、`server.about`、`asset.statistics`（CLI server-info）、`asset.upload`、`asset.read`、`asset.update`、`stack.create`、`stack.read`、`stack.delete`（RAW + JPG 与 360 bundle stack）。`job.create`（metadata refresh）可选：缺少时报 WARNING，改为直接验证 Immich 上传后自行提取的 metadata。以服务器的权限设置为准；其他权限不足明确失败。API 错误会附带服务器返回的 `message`（如 `Missing required permission: ...`、`Quota has been exceeded!`）。Storage Label `camera` 和 Storage Template 由 Immich 自己设置和维护。
 
 | 选项 | 行为 |
 |---|---|

@@ -60,11 +60,32 @@ def asset_id(value):
         raise ImportFailure("Invalid asset ID in Immich response") from None
 
 
+class HttpFailure(ImportFailure):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+def server_message(body):
+    """Only the server's own `message` field, printable and bounded; never headers or secrets."""
+    try:
+        value = jsonlib.loads(body).get("message")
+    except (ValueError, UnicodeError, AttributeError):
+        return ""
+    if isinstance(value, list):
+        value = "; ".join(str(v) for v in value)
+    if not isinstance(value, str):
+        return ""
+    text = "".join(c if c.isprintable() else " " for c in value).strip()
+    return text[:200]
+
+
 class Immich:
     def __init__(self, config, log=lambda message: None):
         self.config, self.log = config, log
         self.owner_id = None
         self.media_types = set()
+        self.warnings = []
 
     def close(self):
         pass  # Each request owns and closes its connection.
@@ -88,7 +109,9 @@ class Immich:
             response = connection.getresponse()
             self.log("API status " + str(response.status))
             if not 200 <= response.status < 300:
-                raise ImportFailure("Immich HTTP " + str(response.status) + ": " + method + " " + path)
+                detail = server_message(response.read(64 * 1024))
+                raise HttpFailure(response.status, "Immich HTTP " + str(response.status) + ": " + method + " " + path
+                                  + (" (" + detail + ")" if detail else ""))
             body = response.read(16 * 1024 * 1024 + 1)
             if len(body) > 16 * 1024 * 1024:
                 raise ImportFailure("Immich JSON response exceeds size limit")
@@ -163,9 +186,11 @@ class Immich:
         # These required transport timestamps are filesystem facts. Capture time
         # extraction remains Immich's job; no timezone is guessed from filenames.
         with readonly(item.path, item.fingerprint) as media:
+            # No `filename` form field: v3.1.0 validates every part, the sidecar
+            # included, against body.filename when present, and `x.MP4` is not
+            # a sidecar name. The asset part's own filename is what Immich keeps.
             fields = {"assetData": (item.path.name, media, "application/octet-stream"),
-                      "filename": item.path.name, "fileCreatedAt": timestamp,
-                      "fileModifiedAt": timestamp, "visibility": item.route}
+                      "fileCreatedAt": timestamp, "fileModifiedAt": timestamp, "visibility": item.route}
             if item.xmp is not None:
                 fields["sidecarData"] = (item.path.name + ".xmp", item.xmp, "application/rdf+xml")
             encoder = Multipart(fields)
@@ -247,7 +272,17 @@ class Immich:
         if not metadata:
             return
         # Re-extraction checks the persistent source, not a transient DB edit.
-        self.request("POST", "/assets/jobs", json={"assetIds": [item.asset_id], "name": "refresh-metadata"})
+        # Immich extracts metadata on its own after a new upload, so a key
+        # without job.create still gets verified from that extraction.
+        try:
+            self.request("POST", "/assets/jobs", json={"assetIds": [item.asset_id], "name": "refresh-metadata"})
+        except HttpFailure as error:
+            if error.status != 403:
+                raise
+            warning = "Metadata refresh not permitted (API key lacks job.create); verified Immich's own extraction instead"
+            if warning not in self.warnings:
+                self.warnings.append(warning)
+            self.log(item.relative + ": " + str(error))
         deadline = time.monotonic() + self.config.verify_timeout
         while True:
             info = self.info(item.asset_id)

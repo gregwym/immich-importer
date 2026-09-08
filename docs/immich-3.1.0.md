@@ -14,10 +14,10 @@ Paths below are relative to the configured `/api` URL.
 | `GET /users/me` | Confirm camera account name or explicit user ID |
 | `GET /server/media-types` | `image` / `video` arrays contain extensions, despite their OpenAPI descriptions saying MIME types |
 | `POST /assets/bulk-upload-check` | `{assets: [{id, checksum}]}` with hex SHA-1; accept or duplicate reject with existing `assetId` |
-| `POST /assets` | Streaming multipart: `assetData`, optional `sidecarData`, `filename`, `fileCreatedAt`, `fileModifiedAt`, `visibility` |
+| `POST /assets` | Streaming multipart: `assetData`, optional `sidecarData`, `fileCreatedAt`, `fileModifiedAt`, `visibility`. No `filename` field: `canUploadFile` checks every file part against `body.filename \|\| file.originalName`, so a `filename` form field parsed before `sidecarData` makes the sidecar fail `isSidecar` with HTTP 400 "Unsupported file type". The asset part's own filename becomes `originalFileName` |
 | `GET /assets/{id}` | `id`, `ownerId`, base64 SHA-1 `checksum`, `visibility`, `libraryId`, `isTrashed`, `isOffline`, `exifInfo` |
 | `PUT /assets/{id}` | Update only `visibility`, then verify |
-| `POST /assets/jobs` | `{assetIds: [...], name: "refresh-metadata"}` |
+| `POST /assets/jobs` | `{assetIds: [...], name: "refresh-metadata"}`; needs `job.create`. HTTP 403 is downgraded to a report warning: Immich already extracts metadata after upload, and verification polls that result |
 | `POST /stacks` | `{assetIds: [primary, ...]}`; the first ID becomes `primaryAssetId`. One stack per RAW + rendered pair and per 360 bundle |
 | `GET /stacks/{id}` | `id`, `primaryAssetId`, `assets[]`; confirms membership and primary after creation or on rerun |
 | `DELETE /stacks/{id}` | Unstacks without deleting assets; used only to rebuild a stack made solely of this importer's members |
@@ -32,6 +32,10 @@ modified); stacks consisting only of our members are deleted and recreated
 with the current primary and full membership; a stack containing foreign
 assets is reported as `STACK CONFLICT`. Stack operations need the
 `stack.create`, `stack.read` and `stack.delete` API key permissions.
+
+Non-2xx responses are reported as `Immich HTTP <status>: <method> <path>` plus
+the server's own `message` field (printable, at most 200 characters); other
+body fields and headers are never copied into reports.
 
 Upload returns `{id, status}`, where `status` is `created` or `duplicate`.
 On successful new upload, the service associates `sidecarData` as an
