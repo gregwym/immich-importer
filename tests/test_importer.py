@@ -346,7 +346,7 @@ class FilesTest(Workspace):
         result = make_xmp(dict(ONERS, lensModel="5.7K 360 Lens"), old)
         root = ET.fromstring(result)
         desc = root.find(".//rdf:Description", NS)
-        self.assertEqual(desc.get("{" + NS["tiff"] + "}Make"), "Insta360")
+        self.assertEqual(desc.get("{" + NS["tiff"] + "}Make"), "Arashi Vision")
         self.assertEqual(desc.get("{http://ns.adobe.com/exif/1.0/}GPSLatitude"), "47,40N")
         self.assertIn(b"2025-01-01T12:00:00", result)
         self.assertNotIn(b"old model", result)
@@ -413,9 +413,22 @@ class FilesTest(Workspace):
 
     def test_wrong_camera_is_not_renamed(self):
         self.put("DJI_20251226075842_0001_D.MP4")
+        item = scan(self.source).items[0]
         with patch("camera_importer.metadata.probe", return_value={"Make": "DJI", "Model": "DJI Mavic 3"}):
             with self.assertRaisesRegex(ImportFailure, "conflicts"):
-                prepare_metadata(scan(self.source).items[0])
+                prepare_metadata(item)
+        # The conflicting values are still reported so the user can see them.
+        self.assertEqual(item.embedded, {"make": "DJI", "model": "DJI Mavic 3"})
+
+    def test_pocket3_product_code_is_the_same_camera(self):
+        self.put("DJI_20251226080057_0003_D.JPG")
+        self.put("holiday.jpg")
+        for item in scan(self.source).items:
+            with patch("camera_importer.metadata.probe", return_value={"Make": "DJI", "Model": "PP-101", "FileType": "JPEG"}):
+                prepare_metadata(item)
+            self.assertEqual(item.expected, {"make": "DJI", "model": "PP-101"})
+            self.assertIsNone(item.xmp)
+            self.assertEqual(item.route, "timeline")
 
     def test_higher_priority_lens_conflict_is_explicit(self):
         self.put(TRIO[0])
@@ -777,7 +790,7 @@ class RealExifToolTest(unittest.TestCase):
                 path.write_bytes(make_xmp(dict(ONERS, lensModel=lens)))
                 result = subprocess.run([executable, "-json", str(path)], capture_output=True, check=True)
                 tags = json.loads(result.stdout)[0]
-                self.assertEqual(tags["Make"], "Insta360")
+                self.assertEqual(tags["Make"], "Arashi Vision")
                 self.assertEqual(tags["Model"], "Insta360 OneRS")
                 self.assertNotIn("LensID", tags)
                 self.assertEqual(tags["LensModel"], lens)

@@ -101,9 +101,9 @@ immich server-info
 | Pocket 3 `DJI_...JPG/JPEG/DNG` | Immich timeline；同名 JPG + DNG 组成一个 Immich stack，JPG 为主 | 保留照片自带 EXIF；无 EXIF 时写 DJI / DJI OsmoPocket3 |
 | Pocket 3 `DJI_...WAV/AAC` | Companion archive，SHA-256 验证 | filename 日期 |
 | Pocket 3 `DJI_...LRF` | 明确忽略，源文件保留 | — |
-| ONE RS `VID_..._00/10_....mp4`、`PRO_VID_..._00/10_....mp4`（HDR/PRO） | Immich timeline | Insta360 / Insta360 OneRS / 4K Boost Lens |
+| ONE RS `VID_..._00/10_....mp4`、`PRO_VID_..._00/10_....mp4`（HDR/PRO） | Immich timeline | Arashi Vision / Insta360 OneRS / 4K Boost Lens |
 | ONE RS `LRV_..._01/11_....mp4`、`PRO_LRV_...mp4` | 明确忽略，源文件保留 | — |
-| ONE RS `LRV_..._11_....insv`、`PRO_LRV_..._11_....insv` | Immich timeline；360 bundle stack 的主 asset | Insta360 / Insta360 OneRS / 5.7K 360 Lens |
+| ONE RS `LRV_..._11_....insv`、`PRO_LRV_..._11_....insv` | Immich timeline；360 bundle stack 的主 asset | Arashi Vision / Insta360 OneRS / 5.7K 360 Lens |
 | ONE RS `VID_..._00/10_....insv`、`PRO_VID_..._00/10_....insv` | Immich timeline；作为同一 stack 的成员，时间线上不单独显示 | 同上 |
 | 明确可独立保存的 INSP / JPEG / DNG（含 HDR 包围曝光的多张 `IMG_` 原片） | Immich timeline；同名 JPG/INSP + DNG 组成一个 stack | 必须由 metadata 确认机型；保留照片自带 EXIF |
 | `Thumb/` 内 JPG/JPEG/PNG/BMP/THM | 明确忽略，源文件保留 | 不把任意 Thumb 子文件都当缓存 |
@@ -122,7 +122,7 @@ immich server-info
 
 1. 读取媒体的 Make / Model / Lens 字段。dry-run 和 report 中每个文件都显示 `embedded`（文件自带）与 `expected`（导入后验证的目标值），以及是否生成 XMP。
 2. **照片尊重原始 EXIF。** JPG / JPEG / DNG / INSP 只要自带 Make 和 Model（且与文件名判断的机型不冲突），就原样保留、不生成 XMP，验证时以自带值为准。只有缺少 Make / Model 的照片才写标准 XMP。
-3. **XMP 用于给视频补充相机信息。** MP4 / INSV 的 embedded 值与目标字符串（`DJI OsmoPocket3`、`Insta360 OneRS` 加镜头）不一致时生成 XMP；已一致则不生成。
+3. **XMP 用于给视频补充相机信息。** MP4 / INSV 的 embedded 值与目标字符串（Make `DJI` / Model `DJI OsmoPocket3`；Make `Arashi Vision` / Model `Insta360 OneRS` 加镜头）不一致时生成 XMP；已一致则不生成。Insta360 的 Make 采用相机在照片 EXIF 里写的公司名 `Arashi Vision`，使视频与照片一致。Pocket 3 的照片 EXIF Model 是产品代号 `PP-101`，视频 metadata 则是 `DJI OsmoPocket3`；两者都识别为 Pocket 3，照片按规则 2 保留 `PP-101`。
 4. `tiff:Make` / `tiff:Model` 保存指定字符串；镜头用 **`exifEX:LensModel`**。
 5. 小型 XMP 在内存中生成，作为 multipart `sidecarData` 和原媒体 `assetData` **同一请求上传**。XMP part 文件名是 `original.ext.xmp`。媒体由文件句柄流式发送，不复制到 staging，也不整体载入内存。
 6. API 读取 asset，验证 owner、SHA-1、managed-library 身份、visibility 和相机字段；请求 `refresh-metadata`，限时轮询到期望值。

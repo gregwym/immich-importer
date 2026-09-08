@@ -73,10 +73,15 @@ def normalize(value):
     return "".join(c.lower() for c in str(value) if c.isalnum())
 
 
+# Pocket 3 MP4 metadata says "DJI OsmoPocket3"; its JPG/DNG EXIF carries the
+# product code "PP-101" instead. Both are the same camera.
+POCKET_MODELS = {"djiosmopocket3", "osmopocket3", "djipocket3", "pocket3", "pp101"}
+ONERS_MODELS = {"insta360oners", "oners"}
+
+
 def confirm_camera(tags, expected):
     make, model = normalize(tags.get("Make", "")), normalize(tags.get("Model", ""))
-    allowed = ({"dji", "szdji"}, {"djiosmopocket3", "osmopocket3", "djipocket3", "pocket3"}) if expected == POCKET else (
-        {"insta360", "arashivision"}, {"insta360oners", "oners"})
+    allowed = ({"dji", "szdji"}, POCKET_MODELS) if expected == POCKET else ({"insta360", "arashivision"}, ONERS_MODELS)
     if (make and make not in allowed[0]) or (model and model not in allowed[1]):
         raise ImportFailure("Camera metadata conflicts with filename classification")
 
@@ -92,9 +97,9 @@ def detect_lens(tags):
 
 def identify_photo(item, tags):
     model = normalize(tags.get("Model", ""))
-    if model in ("insta360oners", "oners"):
+    if model in ONERS_MODELS:
         expected = dict(ONERS)
-    elif model in ("djiosmopocket3", "osmopocket3", "djipocket3", "pocket3"):
+    elif model in POCKET_MODELS:
         expected = dict(POCKET)
     else:
         raise ImportFailure("NEEDS REVIEW: photo camera model is not identifiable")
@@ -159,13 +164,14 @@ def prepare_metadata(item, executable="exiftool", tags=None):
     # change between scan and here differs from the planned fingerprint.
     if snapshot(item.path) != item.fingerprint:
         raise ImportFailure("SOURCE CHANGED: " + item.relative)
+    actual = {"make": tags.get("Make"), "model": tags.get("Model")}
+    actual["lensModel"] = next((tags[k] for k in ("LensID", "LensType", "LensSpec", "LensModel") if tags.get(k) is not None), None)
+    # Record what the file says before any check can fail, so reports show it.
+    item.embedded = {k: str(v) for k, v in actual.items() if v not in (None, "")}
     if item.route == "probe":
         identify_photo(item, tags)
     else:
         confirm_camera(tags, {k: v for k, v in item.expected.items() if k != "lensModel"})
-    actual = {"make": tags.get("Make"), "model": tags.get("Model")}
-    actual["lensModel"] = next((tags[k] for k in ("LensID", "LensType", "LensSpec", "LensModel") if tags.get(k) is not None), None)
-    item.embedded = {k: str(v) for k, v in actual.items() if v not in (None, "")}
     if item.path.suffix.lower() in PHOTO_EXTENSIONS and not item.sidecar and item.embedded.get("make") and item.embedded.get("model"):
         # Photos carry camera EXIF that Immich reads directly: keep it verbatim
         # and verify against it. XMP exists to enrich videos, not to rewrite photos.

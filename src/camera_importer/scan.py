@@ -15,7 +15,8 @@ INSTA = re.compile(r"^(PRO_)?(VID|LRV)_(\d{8})_(\d{6})_(\d{2})_(\d+)\.(mp4|insv)
 PHOTO = re.compile(r"^(?:PRO_)?IMG_(\d{8})_(\d{6})_(\d{2})_(\d+)\.(insp|jpg|jpeg|dng)$", re.I)
 BUNDLE_ROLES = {"master-00": "VID_{}_00_{}.insv", "master-10": "VID_{}_10_{}.insv", "lrv-11": "LRV_{}_11_{}.insv"}
 POCKET = {"make": "DJI", "model": "DJI OsmoPocket3"}
-ONERS = {"make": "Insta360", "model": "Insta360 OneRS"}
+# Insta360 cameras write their company name as EXIF Make; keep videos consistent with photos.
+ONERS = {"make": "Arashi Vision", "model": "Insta360 OneRS"}
 
 
 def capture_date(day, clock):
