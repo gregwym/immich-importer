@@ -17,8 +17,10 @@ MAX_ENTRIES = 200000
 HEX = re.compile(r"^[0-9a-f]+$")
 
 
-def key(fingerprint):
-    return ":".join(str(part) for part in fingerprint)
+def key(item):
+    # Path plus the stable identity fields (size, mtime); inode and ctime are
+    # not dependable on FAT/exFAT card mounts and would only cause misses.
+    return str(item.size) + ":" + str(item.fingerprint[3]) + ":" + str(item.path)
 
 
 def load(root):
@@ -40,7 +42,7 @@ def load(root):
 
 
 def lookup(entries, item):
-    entry = entries.get(key(item.fingerprint)) if item.fingerprint else None
+    entry = entries.get(key(item)) if item.fingerprint else None
     if not entry or entry.get("size") != item.size:
         return None
     sha1, sha256 = entry.get("sha1"), entry.get("sha256")
@@ -52,8 +54,8 @@ def lookup(entries, item):
 
 def record(entries, item, now):
     if item.fingerprint and item.sha1 and item.sha256:
-        entries[key(item.fingerprint)] = {"sha1": item.sha1, "sha256": item.sha256, "size": item.size,
-                                          "path": str(item.path), "seen": now.isoformat()}
+        entries[key(item)] = {"sha1": item.sha1, "sha256": item.sha256, "size": item.size,
+                              "path": str(item.path), "seen": now.isoformat()}
 
 
 def prune(entries, now):

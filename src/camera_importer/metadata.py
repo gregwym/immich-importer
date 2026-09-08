@@ -5,7 +5,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-from .files import readonly, snapshot
+from .files import changed, readonly
 from .model import ImportFailure
 from .scan import ONERS, POCKET
 
@@ -156,14 +156,16 @@ def make_xmp(expected, original=None):
 
 
 def prepare_metadata(item, executable="exiftool", tags=None):
-    if snapshot(item.path) != item.fingerprint:
-        raise ImportFailure("SOURCE CHANGED: " + item.relative)
+    message = changed(item.path, item.fingerprint)
+    if message:
+        raise ImportFailure(message)
     if tags is None:
         tags = probe(item.path, executable)
     # The fingerprint check after reading covers batch-probed files too: any
     # change between scan and here differs from the planned fingerprint.
-    if snapshot(item.path) != item.fingerprint:
-        raise ImportFailure("SOURCE CHANGED: " + item.relative)
+    message = changed(item.path, item.fingerprint)
+    if message:
+        raise ImportFailure(message)
     actual = {"make": tags.get("Make"), "model": tags.get("Model")}
     actual["lensModel"] = next((tags[k] for k in ("LensID", "LensType", "LensSpec", "LensModel") if tags.get(k) is not None), None)
     # Record what the file says before any check can fail, so reports show it.

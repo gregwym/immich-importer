@@ -347,8 +347,18 @@ class FilesTest(Workspace):
         path = self.put("DJI_20251226075842_0001_D.WAV")
         item = scan(self.source).items[0]
         path.write_bytes(b"changed")
-        with self.assertRaisesRegex(ImportFailure, "SOURCE CHANGED"):
+        with self.assertRaisesRegex(ImportFailure, "SOURCE CHANGED: .*size 34->7"):
             archive_wav(item, self.root / "out")
+
+    def test_unstable_inode_or_ctime_is_not_a_change(self):
+        from camera_importer.files import changed
+        path = self.put("DJI_20251226075842_0001_D.WAV")
+        item = scan(self.source).items[0]
+        dev, ino, size, mtime, ctime = item.fingerprint
+        # FAT/exFAT mounts renumber inodes and synthesize ctime; identity is size + mtime.
+        self.assertIsNone(changed(path, (dev + 1, ino + 1, size, mtime, ctime + 1)))
+        self.assertIn("mtime_ns", changed(path, (dev, ino, size, mtime + 1, ctime)))
+        self.assertEqual(archive_wav(item, self.root / "out"), "copied")
 
     def test_output_must_not_overlap(self):
         for output in (self.source, self.source / "out", self.root):

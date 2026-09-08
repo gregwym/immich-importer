@@ -13,8 +13,33 @@ from .model import ImportFailure
 CHUNK = 1024 * 1024
 
 
+FIELDS = ("dev", "inode", "size", "mtime_ns", "ctime_ns")
+# Device and inode numbers are not stable on FAT/exFAT USB mounts (Linux hands
+# out inode numbers per lookup and forgets them under cache pressure) and ctime
+# is synthesized there, so identity rests on size and mtime; the rest is kept
+# for diagnostics only.
+IDENTITY = (2, 3)
+
+
 def fingerprint(st):
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def same(observed, expected):
+    return all(observed[i] == expected[i] for i in IDENTITY)
+
+
+def describe_change(observed, expected):
+    return ", ".join(FIELDS[i] + " " + str(expected[i]) + "->" + str(observed[i])
+                     for i in range(len(FIELDS)) if observed[i] != expected[i]) or "no visible difference"
+
+
+def changed(path, expected):
+    """Message describing a source that no longer matches its planned identity, else None."""
+    observed = snapshot(path)
+    if same(observed, expected):
+        return None
+    return "SOURCE CHANGED: " + str(path) + " (" + describe_change(observed, expected) + ")"
 
 
 def snapshot(path):
@@ -35,11 +60,15 @@ def readonly(path, expected=None):
         initial = fingerprint(os.fstat(stream.fileno()))
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ImportFailure("Not a regular file: " + str(path))
-        if expected is not None and initial != expected:
-            raise ImportFailure("SOURCE CHANGED: " + str(path))
+        if expected is not None and not same(initial, expected):
+            raise ImportFailure("SOURCE CHANGED: " + str(path) + " (" + describe_change(initial, expected) + ")")
         yield stream
-        if fingerprint(os.fstat(stream.fileno())) != initial or snapshot(path) != initial:
-            raise ImportFailure("SOURCE CHANGED: " + str(path))
+        final = fingerprint(os.fstat(stream.fileno()))
+        if not same(final, initial):
+            raise ImportFailure("SOURCE CHANGED: " + str(path) + " (" + describe_change(final, initial) + ")")
+        message = changed(path, initial)
+        if message:
+            raise ImportFailure(message)
 
 
 class Hasher:

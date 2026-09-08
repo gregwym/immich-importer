@@ -210,7 +210,7 @@ camera-import --check-config --companion-root /volume1/immich/companions --manif
 - 允许保存不完整 bundle 的部分进度，但不会把它算作安全完成。重复运行能补齐缺失成员的 asset ID，并把 stack 重建为完整成员。
 - 网络中断后直接重复执行同一命令即可通过 checksum 找到已有资源；不依赖上次报告决定跳过验证。
 - 默认已知素材继续处理，但 unknown、不完整 bundle（缺少 master）或任何错误仍导致最终非零退出。
-- 正常运行结束重新检查源文件状态及目录清单。发现新文件、文件变化或扫描失败，不能给出成功结论。
+- 正常运行结束重新检查源文件状态及目录清单。发现新文件、文件变化或扫描失败，不能给出成功结论。文件身份以大小和 mtime 为准：FAT / exFAT 的 USB 挂载在 Linux 上 inode 号不稳定（按需分配、缓存回收后重新编号）、ctime 是合成值，这些字段只用于报错时的诊断信息（如 `SOURCE CHANGED: ... (inode 123->456)`）。
 - 输出目录不能和 source 重叠，拒绝 symlink 输出目录，禁止配置到 `/volume1/immich/media` 内。其他部署的 managed storage 也不能用作输出根目录。
 
 不触碰 `/volume1/immich/media/library`，没有删除、重命名、修改源媒体或格式化命令。正常读取可能由文件系统更新 access time；工具不写源文件内容或 metadata。

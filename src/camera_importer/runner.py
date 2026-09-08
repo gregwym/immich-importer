@@ -8,7 +8,7 @@ from uuid import uuid4
 from . import hashcache, manifest
 from .api import Immich
 from .config import authenticate, describe
-from .files import archive_wav, atomic_json, hashes, locked, snapshot, validate_roots
+from .files import archive_wav, atomic_json, changed, hashes, locked, validate_roots
 from .metadata import BATCH, prepare_metadata, probe_batch
 from .model import ImportFailure
 from .scan import scan
@@ -314,8 +314,9 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
             for item in plan.items:
                 if item.fingerprint is not None:
                     try:
-                        if snapshot(item.path) != item.fingerprint:
-                            raise ImportFailure("SOURCE CHANGED: " + item.relative)
+                        message = changed(item.path, item.fingerprint)
+                        if message:
+                            raise ImportFailure(message)
                     except (OSError, ImportFailure) as error:
                         fail(item, error)
             # Detect files added/removed while importing. No successful review of
