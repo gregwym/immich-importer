@@ -40,13 +40,13 @@ def display(report):
     print("Source: " + report.get("source", ""))
     if "items" in report:
         if report.get("dryRun"):
-            for route, label in (("timeline", "IMMICH / TIMELINE"), ("archive", "IMMICH / ARCHIVE"),
-                                 ("companion", "COMPANION ARCHIVE"), ("ignored", "IGNORED"), ("sidecar", "SOURCE XMP")):
+            for route, label in (("timeline", "IMMICH / TIMELINE"), ("companion", "COMPANION ARCHIVE"),
+                                 ("ignored", "IGNORED"), ("sidecar", "SOURCE XMP")):
                 print("\n" + label + ":")
                 for item in report["items"]:
                     if item["route"] == route:
                         print("  + " + item["path"])
-                        if route in ("timeline", "archive"):
+                        if route == "timeline":
                             print("    embedded " + json.dumps(item["embeddedMetadata"], ensure_ascii=False))
                             print("    expected " + json.dumps(item["expectedMetadata"], ensure_ascii=False)
                                   + (" -> XMP sidecar" if item["xmpPrepared"] else " (as-is)")
@@ -60,13 +60,13 @@ def display(report):
               ", lrvMissing=" + str(len(report["bundles"]["lrvMissing"])) +
               ", incomplete=" + str(len(report["bundles"]["incomplete"])))
         for key in report["bundles"]["lrvMissing"]:
-            print("  NO LRV (master-00 in timeline): " + key)
+            print("  NO LRV (master-00 leads the stack): " + key)
         for key, missing in report["bundles"]["incomplete"].items():
             print("  INCOMPLETE 360 BUNDLE: " + key)
             for name in missing:
                 print("    Missing: " + name)
         print("Ignored: " + json.dumps(report["ignored"]))
-        print("RAW+JPEG stacks: " + str(len(report.get("stacks", {}))))
+        print("Immich stacks (RAW+JPEG, 360 bundles): " + str(len(report.get("stacks", {}))))
         print("Skipped hidden directories: " + str(len(report["skippedDirectories"])))
         for path in report["skippedDirectories"]:
             print("  SKIPPED: " + path)

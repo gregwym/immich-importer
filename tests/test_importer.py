@@ -145,6 +145,14 @@ class FakeServer:
                     return self.reply({"id": identifier, "status": "created"}, 201)
                 return self.reply({}, 404)
 
+            def do_DELETE(self):
+                state.calls.append(("DELETE", self.path))
+                identifier = self.path.rsplit("/", 1)[-1]
+                if self.path.startswith("/api/stacks/") and identifier in state.stacks:
+                    del state.stacks[identifier]
+                    return self.reply(None, 204)
+                return self.reply({}, 404)
+
             def do_PUT(self):
                 state.calls.append(("PUT", self.path))
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -191,9 +199,10 @@ class FilesTest(Workspace):
             self.put(name)
         plan = scan(self.source)
         routes = {i.path.name: i.route for i in plan.items}
-        self.assertEqual([routes[n] for n in names], ["archive", "archive", "timeline", "timeline", "companion", "ignored", "timeline", "timeline", "ignored", "companion", "timeline"])
+        self.assertEqual([routes[n] for n in names], ["timeline"] * 4 + ["companion", "ignored", "timeline", "timeline", "ignored", "companion", "timeline"])
         self.assertFalse(plan.incomplete)
         self.assertEqual(len(plan.bundles[KEY]), 3)
+        self.assertEqual(sorted(i.path.name for i in plan.stacks[TRIO[2]]), sorted(TRIO))
 
     def test_unknown_and_special_files(self):
         for name in ["something.NEW", "DJI_20251226075842_0001_D.SRT", "VID_20250518_101759_99_001.mp4", "Thumb/important.mp4"]:
@@ -211,20 +220,24 @@ class FilesTest(Workspace):
         self.assertEqual(plan.incomplete[KEY], [TRIO[1]])
         self.assertEqual(plan.lrv_missing, [KEY])
 
-    def test_bundle_without_lrv_shows_master_in_timeline(self):
+    def test_bundle_without_lrv_is_led_by_master(self):
         self.put(TRIO[0])
         self.put(TRIO[1])
         plan = scan(self.source)
-        routes = {i.path.name: i.route for i in plan.items}
-        self.assertEqual(routes, {TRIO[0]: "timeline", TRIO[1]: "archive"})
+        self.assertEqual({i.path.name: i.route for i in plan.items}, {TRIO[0]: "timeline", TRIO[1]: "timeline"})
         self.assertFalse(plan.incomplete)
         self.assertEqual(plan.lrv_missing, [KEY])
-        self.assertEqual(len(plan.bundles[KEY]), 2)
+        self.assertEqual(list(plan.stacks), [TRIO[0]])
         for name in TRIO:
             self.put(name)
         plan = scan(self.source)
-        self.assertEqual({i.path.name: i.route for i in plan.items}, dict(zip(TRIO, ["archive", "archive", "timeline"])))
+        self.assertEqual(list(plan.stacks), [TRIO[2]])
         self.assertFalse(plan.lrv_missing)
+        (self.source / TRIO[0]).unlink()
+        (self.source / TRIO[2]).unlink()
+        plan = scan(self.source)
+        self.assertFalse(plan.stacks)  # a lone member is not a stack
+        self.assertEqual(plan.incomplete[KEY], [TRIO[0]])
 
     def test_hidden_directories_are_skipped(self):
         self.put("DJI_20251226075842_0001_D.MP4")
@@ -259,7 +272,7 @@ class FilesTest(Workspace):
             self.put(name)
         plan = scan(self.source)
         routes = {i.path.name: i.route for i in plan.items}
-        self.assertEqual([routes[n] for n in names], ["archive", "archive", "timeline", "companion", "timeline"])
+        self.assertEqual([routes[n] for n in names], ["timeline", "timeline", "timeline", "companion", "timeline"])
         self.assertEqual(list(plan.bundles), ["PRO_" + KEY])
         self.assertFalse(plan.incomplete)
         (self.source / pro[1]).unlink()
@@ -427,9 +440,9 @@ class FilesTest(Workspace):
         self.put(TRIO[0])
         item = scan(self.source).items[0]
         item.sha1, item.sha256 = hashes(item.path)
-        self.assertEqual(item.route, "timeline")
         value = manifest.merge(None, KEY, OWNER, "http://localhost/api", [item])
-        item.route = "archive"
+        self.assertEqual(value["members"][0]["visibility"], "timeline")
+        item.route = "archive"  # An older manifest may still say archive; not an identity conflict.
         merged = manifest.merge(value, KEY, OWNER, "http://localhost/api", [item])
         self.assertEqual(merged["members"][0]["visibility"], "archive")
 
@@ -463,6 +476,10 @@ class IntegrationTest(Workspace):
         self.assertEqual(first["exitCode"], 0, first["errors"])
         self.assertEqual(len(self.server.uploads), 4)
         self.assertEqual(first["cameraMetadata"]["verified"], 4)
+        self.assertEqual(len(self.server.stacks), 1)
+        primary = next(iter(self.server.stacks.values()))[0]
+        self.assertEqual(self.server.assets[primary]["info"]["originalFileName"], TRIO[2])
+        self.assertEqual({a["info"]["visibility"] for a in self.server.assets.values()}, {"timeline"})
         for upload in self.server.uploads:
             self.assertEqual(upload["sidecarData"][0], upload["assetData"][0] + ".xmp")
             self.assertEqual(upload["assetData"][1], before[upload["assetData"][0]][0])
@@ -515,45 +532,34 @@ class IntegrationTest(Workspace):
         self.assertEqual(report["exitCode"], 0, report["errors"])
         self.assertGreater(len(sizes), 1)
 
-    def test_lrv_removed_after_import_moves_master_to_timeline(self):
+    def test_lrv_removed_after_import_keeps_existing_stack(self):
         for name in TRIO:
             self.put(name)
         self.assertEqual(self.run_import()["exitCode"], 0)
-        assets = {a["info"]["originalFileName"]: a["info"] for a in self.server.assets.values()}
-        self.assertEqual(assets[TRIO[0]]["visibility"], "archive")
         (self.source / TRIO[2]).unlink()
         report = self.run_import()
         self.assertEqual(report["exitCode"], 0, report["errors"])
-        self.assertEqual(report["bundles"], {"complete": 0, "lrvMissing": [KEY], "incomplete": {}, "manifestsWrittenOrVerified": 1})
-        self.assertEqual(assets[TRIO[0]]["visibility"], "timeline")
-        self.assertEqual(assets[TRIO[1]]["visibility"], "archive")
+        self.assertEqual(report["bundles"]["lrvMissing"], [KEY])
+        self.assertEqual(len(self.server.stacks), 1)
+        self.assertEqual(sum(1 for m, _ in self.server.calls if m == "DELETE"), 0)
         self.assertEqual(len(self.server.uploads), 3)
-        members = {m["role"]: m for m in json.loads((self.config.manifest_root / "insta360" / (KEY + ".json")).read_text())["members"]}
-        self.assertEqual(members["master-00"]["visibility"], "timeline")
-        self.assertEqual(members["lrv-11"]["visibility"], "timeline")
 
-    def test_raw_pair_is_stacked_once_and_verified_on_rerun(self):
-        self.put("DJI_20251226080057_0003_D.JPG")
-        self.put("DJI_20251226080057_0003_D.DNG")
-        self.put("DJI_20251226080058_0004_D.JPG")
+    def test_partial_bundle_stack_is_rebuilt_when_members_arrive(self):
+        self.put(TRIO[0])
+        self.put(TRIO[1])
         first = self.run_import()
         self.assertEqual(first["exitCode"], 0, first["errors"])
-        self.assertEqual(len(self.server.stacks), 1)
-        names = {self.server.assets[a]["info"]["originalFileName"]: a for a in next(iter(self.server.stacks.values()))}
-        self.assertEqual(list(names)[0], "DJI_20251226080057_0003_D.JPG")
-        self.assertEqual(first["stacks"], {"DJI_20251226080057_0003_D.JPG": ["DJI_20251226080057_0003_D.DNG", "DJI_20251226080057_0003_D.JPG"]})
-        stacked = [i for i in first["items"] if i["stackId"]]
-        self.assertEqual(len(stacked), 2)
+        old_stack = next(iter(self.server.stacks))
+        self.assertEqual(self.server.assets[self.server.stacks[old_stack][0]]["info"]["originalFileName"], TRIO[0])
+        self.put(TRIO[2])
         second = self.run_import()
         self.assertEqual(second["exitCode"], 0, second["errors"])
         self.assertEqual(len(self.server.stacks), 1)
-        self.assertEqual(sum(1 for m, path in self.server.calls if (m, path) == ("POST", "/api/stacks")), 1)
-        # A foreign stack containing only the RAW is a conflict, never silently merged.
-        self.server.stacks[str(uuid4())] = [names["DJI_20251226080057_0003_D.DNG"]]
-        del self.server.stacks[next(iter(self.server.stacks))]
-        third = self.run_import()
-        self.assertEqual(third["exitCode"], 1)
-        self.assertTrue(any("STACK CONFLICT" in e for e in third["errors"]))
+        self.assertNotIn(old_stack, self.server.stacks)
+        members = next(iter(self.server.stacks.values()))
+        self.assertEqual(self.server.assets[members[0]]["info"]["originalFileName"], TRIO[2])
+        self.assertEqual(len(members), 3)
+        self.assertEqual(len(self.server.assets), 3)
 
     def test_rerun_fills_missing_manifest_asset_id(self):
         for name in TRIO:

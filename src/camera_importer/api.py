@@ -182,33 +182,39 @@ class Immich:
         return value
 
     def ensure_stack(self, primary, children):
-        """Group a rendered photo with its RAW so the timeline shows one asset.
+        """Group assets so the timeline shows only the primary. Returns the stack ID.
 
-        Returns the stack ID. Existing stacks are only accepted when they already
-        contain every member with the rendered photo as primary; nothing is
-        deleted or re-stacked automatically.
+        A stack already holding every member is accepted as it is. Stacks made
+        only of our members (an earlier partial import) are rebuilt with the
+        current primary; unstacking never deletes assets. A stack mixing our
+        members with foreign assets is a conflict left for review.
         """
-        wanted = {primary.asset_id} | {c.asset_id for c in children}
+        wanted = [primary.asset_id] + [c.asset_id for c in children]
         existing = {}
         for item in (primary, *children):
             stack = self.info(item.asset_id).get("stack")
-            if stack is not None:
-                if not isinstance(stack, dict):
-                    raise ImportFailure("Invalid stack field in asset response")
-                existing[item.relative] = asset_id(stack.get("id"))
-        if not existing:
-            response = self.request("POST", "/stacks", json={"assetIds": [primary.asset_id] + [c.asset_id for c in children]})
-            if not isinstance(response, dict):
-                raise ImportFailure("Invalid stack creation response")
-            stack_id = asset_id(response.get("id"))
-        elif len(set(existing.values())) == 1:
-            stack_id = next(iter(existing.values()))
-        else:
-            raise ImportFailure("STACK CONFLICT: RAW and rendered photo are in different stacks")
+            if stack is None:
+                continue
+            if not isinstance(stack, dict):
+                raise ImportFailure("Invalid stack field in asset response")
+            stack_id = asset_id(stack.get("id"))
+            if stack_id not in existing:
+                existing[stack_id] = {asset_id(a.get("id")) for a in self.stack(stack_id)["assets"] if isinstance(a, dict)}
+        for stack_id, members in existing.items():
+            if set(wanted) <= members:
+                return stack_id
+        if any(not members <= set(wanted) for members in existing.values()):
+            raise ImportFailure("STACK CONFLICT: a member already belongs to a stack with other assets")
+        for stack_id in existing:
+            self.request("DELETE", "/stacks/" + stack_id)
+        response = self.request("POST", "/stacks", json={"assetIds": wanted})
+        if not isinstance(response, dict):
+            raise ImportFailure("Invalid stack creation response")
+        stack_id = asset_id(response.get("id"))
         stack = self.stack(stack_id)
         members = {asset_id(a.get("id")) for a in stack["assets"] if isinstance(a, dict)}
-        if stack.get("primaryAssetId") != primary.asset_id or not wanted <= members:
-            raise ImportFailure("STACK CONFLICT: existing stack does not match the RAW/rendered pair")
+        if stack.get("primaryAssetId") != primary.asset_id or not set(wanted) <= members:
+            raise ImportFailure("Stack verification failed: " + primary.relative)
         return stack_id
 
     def info(self, identifier):

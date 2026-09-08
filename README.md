@@ -103,9 +103,8 @@ immich server-info
 | Pocket 3 `DJI_...LRF` | 明确忽略，源文件保留 | — |
 | ONE RS `VID_..._00/10_....mp4`、`PRO_VID_..._00/10_....mp4`（HDR/PRO） | Immich timeline | Insta360 / Insta360 OneRS / 4K Boost Lens |
 | ONE RS `LRV_..._01/11_....mp4`、`PRO_LRV_...mp4` | 明确忽略，源文件保留 | — |
-| ONE RS `VID_..._00_....insv`、`PRO_VID_..._00_....insv` | Immich archive；bundle 缺少 LRV 时改为 timeline | Insta360 / Insta360 OneRS / 5.7K 360 Lens |
-| ONE RS `VID_..._10_....insv`、`PRO_VID_..._10_....insv` | Immich archive | 同上 |
-| ONE RS `LRV_..._11_....insv`、`PRO_LRV_..._11_....insv` | Immich timeline | 同上 |
+| ONE RS `LRV_..._11_....insv`、`PRO_LRV_..._11_....insv` | Immich timeline；360 bundle stack 的主 asset | Insta360 / Insta360 OneRS / 5.7K 360 Lens |
+| ONE RS `VID_..._00/10_....insv`、`PRO_VID_..._00/10_....insv` | Immich timeline；作为同一 stack 的成员，时间线上不单独显示 | 同上 |
 | 明确可独立保存的 INSP / JPEG / DNG（含 HDR 包围曝光的多张 `IMG_` 原片） | Immich timeline；同名 JPG/INSP + DNG 组成一个 stack | 必须由 metadata 确认机型；保留照片自带 EXIF |
 | `Thumb/` 内 JPG/JPEG/PNG/BMP/THM | 明确忽略，源文件保留 | 不把任意 Thumb 子文件都当缓存 |
 | `@` 或 `.` 开头的目录（DSM `@eaDir`、`@Recycle`、`.hidden`） | 整个目录跳过，不进入、不分类 | 报告中列为 skipped |
@@ -115,7 +114,7 @@ immich server-info
 
 **文件命名参考。** Insta360 ONE RS：`[PRO_]{VID|LRV|IMG}_YYYYMMDD_HHMMSS_{00,01,10,11}_XXX.{mp4|insv|insp|jpg|dng}`。两位数第一位是镜头（0 / 1），第二位 0 是 master、1 是 LRV 代理；`PRO_` 前缀表示 HDR / PRO 类模式（Active HDR、FreeFrame 等），Insta360 官方说明这类文件需要在 App / Studio 中后处理，本工具按同样的 channel 规则入库。4K Boost 镜头的 master 可能出现在 `00` 或 `10` channel，两者都写入 `4K Boost Lens`。HDR 照片在卡上是 3 张同一时间戳、序号连续的 `IMG_` 原片，逐张作为独立照片进入 timeline；合成需要 Insta360 App。DJI Pocket 3：`DJI_YYYYMMDDHHMMSS_NNNN_D.{MP4|JPG|DNG|WAV|AAC|LRF}`，AAC 是开启麦克风备份时与 WAV 同步生成的音频文件，与 WAV 同样归档。未在本表内的前缀（例如 X 系列的 `TIM_`、`INTV_`）仍报 UNKNOWN，确认后再补充。
 
-**360 bundle 缺少 LRV：** 一个 bundle 由 `VID_..._00`、`VID_..._10` 两个 master 和 `LRV_..._11` 代理组成。LRV 可由 master 重新生成，删除它不丢失任何原始数据，因此只缺 LRV 的 bundle 不算 incomplete：`VID_..._00_....insv` 改为进入 timeline，作为这段视频的可见条目，`VID_..._10` 仍进入 archive。报告中以 `lrvMissing` 列出这些 bundle。缺少任一 master 仍是 INCOMPLETE 360 BUNDLE 并导致非零退出。之前按 archive 导入的 master，在 LRV 删除后重新运行会把已有 asset 的 visibility 修正为 timeline，manifest 只记录当前 visibility，不视为冲突。通用 `DJI_...` 命名以本项目的 Pocket 3 输入范围解释；若 metadata 明确显示其他 DJI 机型，则报冲突。照片中的其他相机型号不会被改成 ONE RS。
+**360 bundle 作为一个 Immich stack。** 一个 bundle 由 `VID_..._00`、`VID_..._10` 两个 master 和 `LRV_..._11` 代理组成。三个文件都以 timeline visibility 上传，然后组成一个 stack：LRV（可直接播放的低清版本）是主 asset，两个 master 是 stack 成员。Immich 时间线只显示主 asset，打开后可切换到 master 原始文件（双鱼眼未拼接画面）。不再使用 archive visibility。LRV 可由 master 重新生成，删除它不丢失原始数据，因此只缺 LRV 的 bundle 不算 incomplete：`VID_..._00` 改为主 asset，报告中以 `lrvMissing` 列出。缺少任一 master 仍是 INCOMPLETE 360 BUNDLE 并导致非零退出；只剩一个文件时不建 stack。之前按 archive 导入的 master 重新运行时会被修正为 timeline 并加入 stack。通用 `DJI_...` 命名以本项目的 Pocket 3 输入范围解释；若 metadata 明确显示其他 DJI 机型，则报冲突。照片中的其他相机型号不会被改成 ONE RS。
 
 支持 INSV 入库不代表支持拼接，也不保证 raw 双鱼眼视频能作为正常全景播放；master 的原字节仍由 Immich 管理。
 
@@ -128,7 +127,7 @@ immich server-info
 5. 小型 XMP 在内存中生成，作为 multipart `sidecarData` 和原媒体 `assetData` **同一请求上传**。XMP part 文件名是 `original.ext.xmp`。媒体由文件句柄流式发送，不复制到 staging，也不整体载入内存。
 6. API 读取 asset，验证 owner、SHA-1、managed-library 身份、visibility 和相机字段；请求 `refresh-metadata`，限时轮询到期望值。
 
-**RAW + JPG 成对导入。** 同一目录下同名的 `JPG/JPEG/INSP` 与 `DNG` 视为同一张照片：两者都上传到 timeline，然后调用 `POST /stacks` 组成一个 Immich stack，JPG 为主图，DNG 作为堆叠版本。Immich 时间线只显示 stack 主图，所以不会出现重复；打开照片可切换到 RAW。重复运行会核对已有 stack；如果 RAW 或 JPG 已在别的 stack 里，报 `STACK CONFLICT` 并失败，不自动拆并。单独的 DNG（没有同名 JPG）按普通照片进 timeline。API key 需要 `stack.create`、`stack.read` 权限。
+**Stack 规则（RAW + JPG、360 bundle 共用）。** 同一目录下同名的 `JPG/JPEG/INSP` 与 `DNG` 视为同一张照片：两者都上传到 timeline，然后调用 `POST /stacks` 组成一个 Immich stack，JPG 为主图，DNG 作为堆叠版本；单独的 DNG 按普通照片进 timeline。360 bundle 同理，LRV 为主。所有成员上传并验证后才建 stack。重复运行会用 `GET /stacks/{id}` 核对：已有 stack 已包含全部成员则直接接受，不改主 asset（例如本地删除 LRV 后，服务器上的 stack 仍以 LRV 为主）；已有 stack 只由本次成员组成但缺少新成员（之前部分导入的 bundle）时，先 `DELETE /stacks/{id}` 解散再重建，解散不删除任何 asset；已有 stack 混有其他 asset 时报 `STACK CONFLICT` 并失败，不自动拆并。同一 stack 内两个成员字节完全相同（同一个 Immich asset）也报错。API key 需要 `stack.create`、`stack.read`、`stack.delete` 权限。
 
 源目录中的已有关联 XMP 会安全解析并合并，只更改要求标准化的相机属性，其他属性保留。同时存在两种候选命名、多个媒体共用一个 sidecar、无效 XML 或过大的 XMP 会报错。孤立 XMP 仍是 UNKNOWN。
 
@@ -176,7 +175,7 @@ camera-import --check-config --companion-root /volume1/immich/companions --manif
 
 默认复用 `~/.config/immich/auth.yml` 中的 `url` / `key`，兼容旧 `instanceUrl` / `apiKey`。覆盖 API URL 时，若地址与 CLI 登录地址不一致，必须显式给对应 key，避免把旧 key 发给另一台服务器。API key 不接受写进项目 JSON、不放在命令行或日志中。
 
-账户需具备相应的 API 权限：`user.read`、`server.about`、`asset.statistics`（CLI server-info）、`asset.upload`、`asset.read`、`asset.update`、`job.create`（metadata refresh）、`stack.create`、`stack.read`（RAW + JPG stack）。以服务器的权限设置为准；权限不足明确失败。Storage Label `camera` 和 Storage Template 由 Immich 自己设置和维护。
+账户需具备相应的 API 权限：`user.read`、`server.about`、`asset.statistics`（CLI server-info）、`asset.upload`、`asset.read`、`asset.update`、`job.create`（metadata refresh）、`stack.create`、`stack.read`、`stack.delete`（RAW + JPG 与 360 bundle stack）。以服务器的权限设置为准；权限不足明确失败。Storage Label `camera` 和 Storage Template 由 Immich 自己设置和维护。
 
 | 选项 | 行为 |
 |---|---|
@@ -205,7 +204,7 @@ camera-import --check-config --companion-root /volume1/immich/companions --manif
 - WAV 先写目标目录内临时文件，fsync 后核验 SHA-256，再用不覆盖已有文件的原子操作发布。已有同 hash 文件跳过，不同 hash 永不覆盖。日期取 filename，不取 mtime。
 - 媒体同时计算 SHA-1（Immich checksum）和 SHA-256（manifest）。相同 checksum 对应冲突角色或相机信息时，不尝试反复修改同一个 asset。
 - Manifest 记录 bundle key、role、原 filename、size、SHA-256、Immich checksum、asset ID、owner 和服务器身份。锁定后检查旧记录，合并缺失信息，再原子写入；冲突保留原文件并失败。
-- 允许保存不完整 bundle 的部分进度，但不会把它算作安全完成。重复运行能补齐缺失成员的 asset ID。
+- 允许保存不完整 bundle 的部分进度，但不会把它算作安全完成。重复运行能补齐缺失成员的 asset ID，并把 stack 重建为完整成员。
 - 网络中断后直接重复执行同一命令即可通过 checksum 找到已有资源；不依赖上次报告决定跳过验证。
 - 默认已知素材继续处理，但 unknown、不完整 bundle（缺少 master）或任何错误仍导致最终非零退出。
 - 正常运行结束重新检查源文件状态及目录清单。发现新文件、文件变化或扫描失败，不能给出成功结论。

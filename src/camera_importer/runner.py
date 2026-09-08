@@ -32,7 +32,7 @@ def build_plan(source, config, log, progress=QUIET):
         log(item.relative + ": " + item.route + " (" + item.reason + ")")
         if item.error:
             item.status = "failed"
-        elif item.route in ("timeline", "archive", "probe"):
+        elif item.route in ("timeline", "probe"):
             targets.append(item)
     progress("Scanned " + str(len(plan.items)) + " files (" + str(len(plan.unknown)) + " unknown); reading camera metadata for "
              + str(len(targets)) + " with " + config.exiftool_bin)
@@ -67,11 +67,11 @@ def summarize(plan, config, dry_run, metadata_verify, manifests=0):
         errors.append("Metadata verification disabled; debug runs cannot establish safety")
     if not dry_run:
         for item in plan.items:
-            if item.route in ("timeline", "archive", "companion") and item.status == "planned":
+            if item.route in ("timeline", "companion") and item.status == "planned":
                 errors.append("NOT PROCESSED: " + item.relative)
     success = not errors
     routes = {}
-    for route in ("timeline", "archive", "companion"):
+    for route in ("timeline", "companion"):
         counts = Counter(i.status for i in plan.items if i.route == route)
         routes[route] = dict(counts)
     return {"schemaVersion": 1, "source": str(plan.source), "dryRun": dry_run, "config": describe(config),
@@ -188,6 +188,10 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                 if len(contracts) > 1:
                     for item in matches:
                         fail(item, "Same Immich checksum has conflicting content, visibility or camera metadata")
+                elif len({i.stack for i in matches if i.stack}) < sum(1 for i in matches if i.stack):
+                    # One Immich asset cannot fill two roles of the same stack.
+                    for item in matches:
+                        fail(item, "Identical bytes in two members of one bundle/stack; needs review")
             for key, members in plan.bundles.items():
                 try:
                     previous = manifest.load(config.manifest_root / "insta360" / (key + ".json"))
@@ -204,7 +208,7 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                         log(item.relative + ": " + item.status)
                     except (OSError, ImportFailure) as error:
                         fail(item, error)
-            pending = sorted([i for i in plan.assets if not i.error], key=lambda i: i.route == "archive")
+            pending = [i for i in plan.assets if not i.error]
             try:
                 existing = api.check(pending) if pending else {}
             except ImportFailure as error:

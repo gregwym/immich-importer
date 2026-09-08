@@ -56,7 +56,9 @@ def classify(path, relative):
                 item.reason = "Insta360 4K Boost " + mode + ("video" if prefix == "VID" else "LRV proxy")
                 item.expected["lensModel"] = "4K Boost Lens"
         elif (prefix, channel) in (("VID", "00"), ("VID", "10"), ("LRV", "11")):
-            item.route = "timeline" if prefix == "LRV" else "archive"
+            # All three land in the timeline as one Immich stack; the LRV proxy
+            # (or master-00 without it) is the visible primary.
+            item.route = "timeline"
             item.reason = "Insta360 " + mode + "360 bundle"
             item.bundle = f"{pro}{day}_{clock}_{sequence}"
             item.role = "lrv-11" if prefix == "LRV" else "master-" + channel
@@ -110,7 +112,7 @@ def scan(source):
             sidecar_index.setdefault((path.parent, path.name.lower()), []).append(path)
     used = set()
     for item in list(plan.items):
-        if item.route not in ("timeline", "archive", "probe"):
+        if item.route not in ("timeline", "probe"):
             continue
         candidates = []
         for name in ((item.path.name + ".xmp").lower(), item.path.with_suffix(".xmp").name.lower()):
@@ -137,11 +139,8 @@ def scan(source):
         missing = [name for role, name in expected.items() if role not in roles]
         if "lrv-11" not in roles:
             # The LRV proxy is derivable from the masters, so its absence loses
-            # nothing; without it the front master becomes the timeline entry.
+            # nothing; the front master then leads the stack instead.
             plan.lrv_missing.append(key)
-            for member in members:
-                if member.role == "master-00":
-                    member.route, member.reason = "timeline", "Insta360 360 bundle (no LRV; master shown in timeline)"
             missing = [name for name in missing if "LRV_" not in name]
         if missing:
             plan.incomplete[key] = missing
@@ -149,6 +148,11 @@ def scan(source):
             plan.errors.append("AMBIGUOUS 360 BUNDLE (duplicate roles): " + key)
             for member in members:
                 member.error = "Duplicate bundle role; needs review"
+            continue
+        primary = next((m for role in ("lrv-11", "master-00") for m in members if m.role == role), None)
+        if primary is not None and len(members) > 1:
+            for member in members:
+                member.stack = primary.relative
     # RAW + rendered pairs (DJI_x.JPG + DJI_x.DNG, IMG_x.jpg/insp + IMG_x.dng) are
     # one photo: the rendered file leads an Immich stack and the RAW joins it.
     pairs = {}

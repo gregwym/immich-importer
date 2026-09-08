@@ -54,11 +54,11 @@ class Plan:
 
     @property
     def assets(self):
-        return [i for i in self.items if i.route in ("timeline", "archive")]
+        return [i for i in self.items if i.route == "timeline"]
 
     @property
     def stacks(self):
-        """RAW + JPEG/INSP pairs keyed by the primary (rendered) photo."""
+        """Stack groups (RAW + rendered photo, 360 bundle) keyed by the primary asset's path."""
         groups = {}
         for item in self.items:
             if item.stack:
