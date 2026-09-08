@@ -12,7 +12,7 @@ camera-import --json /some/history-folder
 
 ## DSM：无需 pip 的单文件脚本
 
-需要 Python **3.9+**、Perl / **ExifTool**，以及已经登录的 Immich CLI。没有任何第三方 Python 依赖。
+需要 Python **3.8+**、Perl / **ExifTool**，以及已经登录的 Immich CLI。兼容 DSM 7.2.2 自带的 Python 3.8.15，没有任何第三方 Python 依赖。
 
 只需下载仓库根目录的 [`camera-import.py`](camera-import.py)，放在素材目录之外：
 
