@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 import subprocess
 import time
 from datetime import datetime, timezone
+from .capture_time import time_matches
 from uuid import UUID, uuid4
 
 
@@ -186,8 +187,8 @@ class Immich:
 
     def upload(self, item):
         timestamp = datetime.fromtimestamp(item.fingerprint[3] / 1e9, timezone.utc).isoformat()
-        # These required transport timestamps are filesystem facts. Capture time
-        # extraction remains Immich's job; no timezone is guessed from filenames.
+        # Modified time is a filesystem fact; video creation time is the resolved
+        # capture instant also persisted in XMP. Photos retain their old fallback.
         # Unknown hashes are computed from the very bytes being sent, so a new
         # file is read once. The server's checksum is compared against them in
         # validate_identity, which is what proves the stored copy is intact.
@@ -197,7 +198,7 @@ class Immich:
             # included, against body.filename when present, and `x.MP4` is not
             # a sidecar name. The asset part's own filename is what Immich keeps.
             fields = {"assetData": (item.path.name, media, "application/octet-stream"),
-                      "fileCreatedAt": timestamp, "fileModifiedAt": timestamp, "visibility": item.route}
+                      "fileCreatedAt": item.capture_time or timestamp, "fileModifiedAt": timestamp, "visibility": item.route}
             if item.xmp is not None:
                 fields["sidecarData"] = (item.path.name + ".xmp", item.xmp, "application/rdf+xml")
             encoder = Multipart(fields, hasher.update if hasher else None)
@@ -289,7 +290,7 @@ class Immich:
 
     def metadata_matches(self, item, info):
         exif = info.get("exifInfo") or {}
-        return info.get("visibility") == item.route and all(exif.get(k) == v for k, v in item.expected.items())
+        return time_matches(item, info) and info.get("visibility") == item.route and all(exif.get(k) == v for k, v in item.expected.items())
 
     def request_refresh(self, item):
         # Re-extraction checks the persistent source, not a transient DB edit.
@@ -340,8 +341,11 @@ class Immich:
                 return
             if time.monotonic() >= deadline:
                 for item in waiting:
-                    exif = (self.info(item.asset_id).get("exifInfo") or {})
+                    info = self.info(item.asset_id)
+                    exif = info.get("exifInfo") or {}
                     mismatches = [k for k, v in item.expected.items() if exif.get(k) != v]
+                    if not time_matches(item, info):
+                        mismatches.append("capture date/time/timezone")
                     tail = ("; Immich has not extracted the uploaded sidecar yet, rerun to verify" if item.status == "uploaded"
                             else "; existing assets are not patched with XMP")
                     item.status, item.error = "failed", "Metadata verification timed out: " + ", ".join(mismatches) + tail

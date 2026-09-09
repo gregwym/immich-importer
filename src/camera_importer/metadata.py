@@ -7,18 +7,19 @@ import xml.etree.ElementTree as ET
 
 from .files import changed, readonly
 from .model import ImportFailure
+from .capture_time import TIME_TAGS
 from .scan import ONERS, POCKET
 
 NS = {"x": "adobe:ns:meta/", "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
       "tiff": "http://ns.adobe.com/tiff/1.0/", "aux": "http://ns.adobe.com/exif/1.0/aux/",
-      "exifEX": "http://cipa.jp/exif/1.0/"}
+      "exif": "http://ns.adobe.com/exif/1.0/", "exifEX": "http://cipa.jp/exif/1.0/"}
 for prefix, uri in NS.items():
     ET.register_namespace(prefix, uri)
 
 
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".dng", ".insp")
 TAGS = ["-Make", "-Model", "-LensID", "-LensType", "-LensSpec", "-LensModel", "-Lens", "-FileType",
-        "-NumberOfImages", "-ProjectionType", "-Error", "-Warning"]
+        "-NumberOfImages", "-ProjectionType", "-Error", "-Warning"] + ["-" + tag for tag in TIME_TAGS]
 BATCH = 50
 
 
@@ -131,7 +132,7 @@ def set_property(root, namespace, name, value):
     description.set(key, value)
 
 
-def make_xmp(expected, original=None):
+def make_xmp(expected, original=None, capture_time=None):
     if original:
         try:
             # Decode strictly before checking declarations, preventing UTF-16/NUL
@@ -152,6 +153,8 @@ def make_xmp(expected, original=None):
         # creates Composite:LensID = "Unknown (...)" in ExifTool, which masks
         # LensModel in Immich. Use the standard textual property instead.
         set_property(root, "exifEX", "LensModel", expected["lensModel"])
+    if capture_time:
+        set_property(root, "exif", "DateTimeOriginal", capture_time)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
@@ -166,6 +169,7 @@ def prepare_metadata(item, executable="exiftool", tags=None):
     message = changed(item.path, item.fingerprint)
     if message:
         raise ImportFailure(message)
+    item.time_tags = {k: tags[k] for k in TIME_TAGS if tags.get(k)}
     actual = {"make": tags.get("Make"), "model": tags.get("Model")}
     actual["lensModel"] = next((tags[k] for k in ("LensID", "LensType", "LensSpec", "LensModel") if tags.get(k) is not None), None)
     # Record what the file says before any check can fail, so reports show it.

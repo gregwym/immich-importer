@@ -27,6 +27,9 @@ class Item:
     sha1: str = ""
     sha256: str = ""
     hash_source: str = ""  # "index", "read" or "upload"
+    capture_time: str = ""
+    capture_source: str = ""
+    time_tags: Dict[str, str] = field(default_factory=dict)
     xmp: Optional[bytes] = None
     asset_id: Optional[str] = None
     status: str = "planned"
@@ -41,7 +44,8 @@ class Item:
                 "role": self.role, "size": self.size, "sha1": self.sha1,
                 "sha256": self.sha256, "hashSource": self.hash_source, "assetId": self.asset_id,
                 "status": self.status, "verified": self.verified,
-                "xmpPrepared": self.xmp is not None, "error": self.error}
+                "captureTime": self.capture_time, "captureTimeSource": self.capture_source,
+                "embeddedTimeMetadata": self.time_tags, "xmpPrepared": self.xmp is not None, "error": self.error}
 
 
 @dataclass

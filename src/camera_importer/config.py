@@ -20,6 +20,7 @@ class Config:
     auth_dir: Path = Path.home() / ".config/immich"
     expected_user_name: str = "Camera Archive"
     expected_user_id: str = ""
+    capture_timezone: str = ""
     verify_timeout: float = 180.0
     poll_interval: float = 2.0
     request_timeout: float = 300.0
@@ -29,7 +30,7 @@ class Config:
 
 
 PUBLIC = ("companion_root", "manifest_root", "immich_bin", "exiftool_bin", "api_url", "auth_dir",
-          "expected_user_name", "expected_user_id", "verify_timeout", "poll_interval", "request_timeout")
+          "expected_user_name", "expected_user_id", "verify_timeout", "poll_interval", "request_timeout", "capture_timezone")
 
 
 def describe(config):
@@ -61,14 +62,14 @@ def load_config(args):
     unknown = set(values) - set(PUBLIC)
     if unknown:
         raise ImportFailure("Unknown configuration keys: " + ", ".join(sorted(unknown)))
-    env = {"COMPANION_ROOT": "companion_root", "MANIFEST_ROOT": "manifest_root",
+    env = {"CAMERA_CAPTURE_TIMEZONE": "capture_timezone", "COMPANION_ROOT": "companion_root", "MANIFEST_ROOT": "manifest_root",
            "IMMICH_BIN": "immich_bin", "EXIFTOOL_BIN": "exiftool_bin", "IMMICH_API_URL": "api_url",
            "IMMICH_API_KEY": "api_key", "IMMICH_CONFIG_DIR": "auth_dir",
            "IMMICH_EXPECTED_USER_ID": "expected_user_id", "IMMICH_EXPECTED_USER_NAME": "expected_user_name"}
     for key, field in env.items():
         if key in os.environ:
             values[field] = os.environ[key]
-    for key in ("companion_root", "manifest_root", "api_url", "auth_dir", "verify_timeout"):
+    for key in ("companion_root", "manifest_root", "api_url", "auth_dir", "verify_timeout", "capture_timezone"):
         value = getattr(args, key, None)
         if value is not None:
             values[key] = value
@@ -83,7 +84,7 @@ def load_config(args):
             if not 0 < value <= 86400:
                 raise ValueError()
             setattr(config, field, value)
-        for field in ("immich_bin", "exiftool_bin", "api_url", "api_key", "expected_user_name", "expected_user_id"):
+        for field in ("immich_bin", "exiftool_bin", "api_url", "api_key", "expected_user_name", "expected_user_id", "capture_timezone"):
             if not isinstance(getattr(config, field), str):
                 raise ValueError()
     except (ValueError, TypeError):

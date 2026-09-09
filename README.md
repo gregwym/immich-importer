@@ -129,13 +129,46 @@ immich server-info
 
 **Stack 规则（RAW + JPG、360 bundle 共用）。** 同一目录下同名的 `JPG/JPEG/INSP` 与 `DNG` 视为同一张照片：两者都上传到 timeline，然后调用 `POST /stacks` 组成一个 Immich stack，JPG 为主图，DNG 作为堆叠版本；单独的 DNG 按普通照片进 timeline。360 bundle 同理，LRV 为主。所有成员上传并验证后才建 stack。重复运行会用 `GET /stacks/{id}` 核对：已有 stack 已包含全部成员则直接接受，不改主 asset（例如本地删除 LRV 后，服务器上的 stack 仍以 LRV 为主）；已有 stack 只由本次成员组成但缺少新成员（之前部分导入的 bundle）时，先 `DELETE /stacks/{id}` 解散再重建，解散不删除任何 asset；已有 stack 混有其他 asset 时报 `STACK CONFLICT` 并失败，不自动拆并。同一 stack 内两个成员字节完全相同（同一个 Immich asset）也报错。API key 需要 `stack.create`、`stack.read`、`stack.delete` 权限。
 
-源目录中的已有关联 XMP 会安全解析并合并，只更改要求标准化的相机属性，其他属性保留。同时存在两种候选命名、多个媒体共用一个 sidecar、无效 XML 或过大的 XMP 会报错。孤立 XMP 仍是 UNKNOWN。
+源目录中的已有关联 XMP 会安全解析并合并，更改要求标准化的相机属性；视频还写入经核对的拍摄日期，其他属性保留。同时存在两种候选命名、多个媒体共用一个 sidecar、无效 XML 或过大的 XMP 会报错。孤立 XMP 仍是 UNKNOWN。
 
 **Lens 的特别处理：** Immich 3.1.0 优先读取 `LensID → LensType → LensSpec → LensModel`。ExifTool 会把填入文本的 `aux:LensID` 转成 `Unknown (...)`，因此本工具不会这样写。如果源文件已有会遮盖目标 LensModel 的冲突字段，则报告 NEEDS REVIEW；不伪造数字 ID。服务端验证不符合目标值时始终失败。
 
 **已有 asset 不补传 XMP。** 重复导入会读取并验证已有 metadata，修复 visibility，必要的 extraction refresh 可以重跑。已有 metadata 不正确、XMP 缺失或不生效时，返回非零；不删除重建 asset、不直接操作数据库或 managed storage。
 
 `GET /assets/{id}` 不提供独立的 sidecar 内容回读接口。本工具的新上传依赖 v3.1.0 官方 multipart sidecar 持久化路径，并验证最终 metadata。API 任务异步执行，轮询正确字段不等于提供独立的任务完成收据；工具不会声称下载核验过服务器端 XMP。完整接口依据见 [实现说明](docs/immich-3.1.0.md)。
+
+## 视频拍摄时间和时区
+
+MP4 / INSV 使用可靠且带偏移的 `DateTimeOriginal` / `CreationDate`（也支持
+`DateTimeOriginal` + `OffsetTimeOriginal`）；没有可靠带时区日期时，使用已识别的相机文件名时间。
+QuickTime 整数 `CreateDate` / `MediaCreateDate` 的 UTC 语义不能仅凭字段名保证，因此只记录用于诊断，
+不直接当作带时区的拍摄日期。文件系统 mtime / ctime 不用作视频拍摄时间回退。
+
+文件名只有相机钟点，缺少时区时需明确配置拍摄时区，例如：
+
+```sh
+camera-import --capture-timezone America/Los_Angeles --dry-run /some/folder
+camera-import --capture-timezone America/Los_Angeles /some/folder
+```
+
+也支持环境变量 `CAMERA_CAPTURE_TIMEZONE` 或 config JSON 的 `capture_timezone`。
+默认不猜时区；这意味着缺少带时区 metadata 的视频在未配置时区时会报 NEEDS REVIEW，不上传。
+IANA 时区依据**拍摄日期**处理夏令时；Python 3.8 使用系统 zoneinfo 和 libc，无需 pip。
+系统缺少对应时区数据会明确失败。重复/不存在的夏令时钟点需要显式偏移，例如
+`--capture-timezone=-07:00`。拍摄地不同的目录应使用各自时区，不应以 NAS 或当前浏览器时区推断。
+
+同一 360 bundle 共用一个拍摄时间及偏移：优先共享成员中可靠的时间，其他成员从中补齐；
+所有成员都没有时使用共同的文件名。可靠成员日期/偏移冲突，或与文件名钟点相差超过 2 秒时要求 review。
+现有 source XMP 中日期必须带明确偏移，并参与上述核对；不会默默忽略人工编辑的 sidecar 日期。
+
+每个视频在内存中的 XMP 写入带偏移的 `exif:DateTimeOriginal`，随新 asset 一起上传。
+`fileCreatedAt` 同时使用该拍摄时刻，`fileModifiedAt` 仍为源 mtime。
+上传后验证 `exifInfo.dateTimeOriginal` 的绝对时刻、`localDateTime` 的当地钟点和
+`exifInfo.timeZone` 对应的偏移，允许等价时区字符串。任何不一致均失败。
+报告包含 `captureTime`、`captureTimeSource` 和原始 `embeddedTimeMetadata`。
+此版本时间增强仅针对视频；照片维持原有 EXIF 策略。
+
+**已导入资源仍不补传 XMP。** 重跑会验证日期；已有错误日期会失败，不会自动修好或删除重传。
 
 ## 配置
 

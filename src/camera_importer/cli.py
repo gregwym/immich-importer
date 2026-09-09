@@ -24,6 +24,7 @@ def parser():
     p.add_argument("--companion-root")
     p.add_argument("--manifest-root")
     p.add_argument("--api-url")
+    p.add_argument("--capture-timezone", help="Fallback shooting timezone: America/Los_Angeles or +08:00")
     p.add_argument("--auth-dir", help="Directory containing Immich CLI auth.yml")
     p.add_argument("--verify-timeout", type=float, help="Metadata polling timeout per asset in seconds")
     return p
@@ -47,6 +48,8 @@ def display(report):
                     if item["route"] == route:
                         print("  + " + item["path"])
                         if route == "timeline":
+                            if item.get("captureTime"):
+                                print("      capture: " + item["captureTime"] + " (" + item["captureTimeSource"] + ")")
                             print("    embedded " + json.dumps(item["embeddedMetadata"], ensure_ascii=False))
                             print("    expected " + json.dumps(item["expectedMetadata"], ensure_ascii=False)
                                   + (" -> XMP sidecar" if item["xmpPrepared"] else " (as-is)")

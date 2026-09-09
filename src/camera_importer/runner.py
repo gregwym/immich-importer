@@ -9,7 +9,8 @@ from . import hashcache, manifest
 from .api import Immich
 from .config import authenticate, describe
 from .files import archive_wav, atomic_json, changed, hashes, locked, validate_roots
-from .metadata import BATCH, prepare_metadata, probe_batch
+from .metadata import BATCH, prepare_metadata, probe_batch, probe, make_xmp
+from .capture_time import choose, parse_date
 from .model import ImportFailure
 from .scan import scan
 
@@ -53,6 +54,34 @@ def build_plan(source, config, log, progress=QUIET):
                 fail(item, error)
                 if item.route == "probe":
                     item.route, item.reason = "unknown", "Photo metadata requires review"
+    videos = [i for i in targets if i.path.suffix.lower() in (".mp4", ".insv")]
+    groups = {}
+    for item in videos:
+        groups.setdefault(item.bundle or item.relative, []).append(item)
+    for members in groups.values():
+        try:
+            if any(i.error for i in members):
+                raise ImportFailure("NEEDS REVIEW: bundle member metadata failed")
+            for item in members:
+                if item.sidecar:
+                    side = probe(item.sidecar, config.exiftool_bin)
+                    # Existing sidecar dates are authoritative, including naive
+                    # dates. Do not silently replace an edited sidecar date.
+                    for key in ('DateTimeOriginal', 'SubSecDateTimeOriginal', 'CreationDate', 'CreateDate'):
+                        if side.get(key):
+                            value = parse_date(side[key])
+                            if not value or value.tzinfo is None:
+                                raise ImportFailure("NEEDS REVIEW: source sidecar date lacks explicit timezone")
+                            item.time_tags = {"DateTimeOriginal": side[key]}
+                            break
+            value, origin = choose(members, config.capture_timezone)
+            for item in members:
+                item.capture_time, item.capture_source = value.isoformat(), origin
+                item.xmp = make_xmp(item.expected, item.xmp, item.capture_time)
+                log(item.relative + ": capture " + item.capture_time + " (" + origin + ")")
+        except (ImportFailure, OSError, ValueError) as error:
+            for item in members:
+                fail(item, error)
     return plan
 
 
@@ -215,7 +244,7 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                     if item.sha1 and not item.error:
                         identities.setdefault(item.sha1, []).append(item)
                 for matches in identities.values():
-                    contracts = {(i.sha256, i.route, tuple(sorted(i.expected.items()))) for i in matches}
+                    contracts = {(i.sha256, i.route, i.capture_time, tuple(sorted(i.expected.items()))) for i in matches}
                     if len(contracts) > 1:
                         for item in matches:
                             fail(item, "Same Immich checksum has conflicting content, visibility or camera metadata")

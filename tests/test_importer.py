@@ -185,6 +185,12 @@ class FakeServer:
                 props.update({k.rsplit("}", 1)[-1]: v for k, v in element.attrib.items()})
             asset["info"]["exifInfo"] = {"make": props.get("Make"), "model": props.get("Model"),
                                         "lensModel": props.get("LensID", props.get("LensModel"))}
+            if props.get("DateTimeOriginal"):
+                from datetime import datetime, timezone
+                date = datetime.fromisoformat(props["DateTimeOriginal"])
+                asset["info"]["exifInfo"].update(dateTimeOriginal=date.astimezone(timezone.utc).isoformat(),
+                                               timeZone="UTC" + date.strftime("%z")[:3] + ":" + date.strftime("%z")[3:])
+                asset["info"]["localDateTime"] = date.replace(tzinfo=timezone.utc).isoformat()
 
     def close(self):
         self.http.shutdown()
@@ -306,9 +312,9 @@ class FilesTest(Workspace):
         for index in range(3):
             self.put("DJI_2025122607584" + str(index) + "_000" + str(index) + "_D.MP4")
         from camera_importer.runner import build_plan
-        plan = build_plan(self.source, Config(exiftool_bin=str(fake)), lambda m: None)
+        plan = build_plan(self.source, Config(exiftool_bin=str(fake), capture_timezone="America/Los_Angeles"), lambda m: None)
         self.assertEqual([i.status for i in plan.assets], ["planned"] * 3)
-        self.assertTrue(all(i.xmp is None for i in plan.assets))
+        self.assertTrue(all(i.xmp is not None for i in plan.assets))
         self.assertEqual((self.root / "exiftool.calls").read_text().count("1"), 1)
 
     def test_duplicate_bundle_roles_fail(self):
@@ -495,7 +501,7 @@ class IntegrationTest(Workspace):
         super().setUp()
         self.server = FakeServer()
         self.config = Config(companion_root=self.root / "companions", manifest_root=self.root / "manifests",
-                             api_url=self.server.url, api_key="test-secret", verify_timeout=0.025, poll_interval=0.005)
+                             capture_timezone="America/Los_Angeles", api_url=self.server.url, api_key="test-secret", verify_timeout=0.025, poll_interval=0.005)
         self.probe_patch = patch("camera_importer.metadata.probe", return_value={"FileType": "MP4"})
         self.cli_patch = patch("camera_importer.api.subprocess.run", return_value=subprocess.CompletedProcess([], 0))
         self.probe_patch.start()
@@ -652,6 +658,24 @@ class IntegrationTest(Workspace):
         report = self.run_import()
         self.assertEqual(report["exitCode"], 1)
         self.assertTrue(any("timed out" in e for e in report["errors"]))
+
+    def test_existing_wrong_capture_time_fails_without_reupload(self):
+        self.put("DJI_20251226075842_0001_D.MP4")
+        self.assertEqual(self.run_import()["exitCode"], 0)
+        asset = next(iter(self.server.assets.values()))
+        asset["info"]["localDateTime"] = "2026-09-09T02:17:00Z"
+        self.server.ignore_sidecar = True
+        result = self.run_import()
+        self.assertEqual(result["exitCode"], 1)
+        self.assertEqual(len(self.server.uploads), 1)
+        self.assertTrue(any("capture date/time/timezone" in error for error in result["errors"]))
+
+    def test_missing_capture_timezone_blocks_video_upload(self):
+        self.put("DJI_20251226075842_0001_D.MP4")
+        self.config.capture_timezone = ""
+        result = self.run_import()
+        self.assertEqual(result["exitCode"], 1)
+        self.assertFalse(self.server.uploads)
 
     def test_existing_missing_xmp_is_not_reuploaded(self):
         self.put("DJI_20251226075842_0001_D.MP4")
@@ -924,13 +948,14 @@ class RealExifToolTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "original.insv.xmp"
             for lens in ("4K Boost Lens", "5.7K 360 Lens"):
-                path.write_bytes(make_xmp(dict(ONERS, lensModel=lens)))
+                path.write_bytes(make_xmp(dict(ONERS, lensModel=lens), capture_time="2026-09-08T18:24:40-07:00"))
                 result = subprocess.run([executable, "-json", str(path)], capture_output=True, check=True)
                 tags = json.loads(result.stdout)[0]
                 self.assertEqual(tags["Make"], "Arashi Vision")
                 self.assertEqual(tags["Model"], "Insta360 OneRS")
                 self.assertNotIn("LensID", tags)
                 self.assertEqual(tags["LensModel"], lens)
+                self.assertEqual(tags["DateTimeOriginal"], "2026:09:08 18:24:40-07:00")
 
     @unittest.skipUnless((os.environ.get("EXIFTOOL_BIN") or shutil.which("exiftool")) and shutil.which("ffmpeg"), "ExifTool / ffmpeg not installed")
     def test_real_mp4_probe_and_xmp_leave_source_unchanged(self):

@@ -43,10 +43,18 @@ On successful new upload, the service associates `sidecarData` as an
 update an existing sidecar. The API has no sidecar replacement endpoint in this
 version; no replacement is attempted.
 
-Required upload timestamps are taken from source filesystem mtime. This is a
-transport fallback, not a fabricated capture time: XMP does not inject dates,
-and Immich extracts original capture timestamps when available. WAV folder
-dates always come from the filename. No timezone is inferred from camera names.
+Video fileCreatedAt now uses the resolved capture instant; fileModifiedAt stays
+at source mtime. Video XMP carries exif:DateTimeOriginal with an explicit offset.
+The metadata service explicitly prefers sidecar dates and removes media date
+and timezone tags when a sidecar date is present. Capture verification compares
+exifInfo.dateTimeOriginal, localDateTime (wall-clock encoded as UTC), and the
+reported timeZone offset. Stacking does not unify dates itself.
+
+Only explicit-offset capture tags are accepted as reliable; unzoned QuickTime
+integer dates are diagnostic because cameras can write local clocks in nominal
+UTC fields. Known camera filename clocks require a configured shooting timezone.
+No mtime/ctime fallback is accepted for video capture. Existing assets are checked
+but never receive replacement XMP. Photos keep their existing date behavior.
 
 ## XMP / Lens
 
