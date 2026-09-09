@@ -91,4 +91,5 @@ class InstallerTest(unittest.TestCase):
                 installer.install(args)
                 self.assertEqual(first, (prefix / 'bin/camera-import').read_bytes())
             self.assertEqual(sentinel.read_text(), 'preserve credentials')
-            self.assertEqual(len(list((prefix / 'share/immich-importer/releases').iterdir())), 1)
+            self.assertEqual(len(list((prefix / 'share/immich-importer/releases').iterdir())), 2)
+            self.assertTrue((prefix / 'bin/camera-repair-time').exists())

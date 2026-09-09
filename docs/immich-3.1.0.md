@@ -16,7 +16,7 @@ Paths below are relative to the configured `/api` URL.
 | `POST /assets/bulk-upload-check` | `{assets: [{id, checksum}]}` with hex SHA-1; accept or duplicate reject with existing `assetId`. Only for files whose hash is already known (hash index or manifest pre-check); other files are uploaded directly and the server's own checksum dedup answers `duplicate` |
 | `POST /assets` | Streaming multipart: `assetData`, optional `sidecarData`, `fileCreatedAt`, `fileModifiedAt`, `visibility`. No `filename` field: `canUploadFile` checks every file part against `body.filename \|\| file.originalName`, so a `filename` form field parsed before `sidecarData` makes the sidecar fail `isSidecar` with HTTP 400 "Unsupported file type". The asset part's own filename becomes `originalFileName` |
 | `GET /assets/{id}` | `id`, `ownerId`, base64 SHA-1 `checksum`, `visibility`, `libraryId`, `isTrashed`, `isOffline`, `exifInfo` |
-| `PUT /assets/{id}` | Update only `visibility`, then verify |
+| `PUT /assets/{id}` | Importer: visibility. Separate repair CLI: only `dateTimeOriginal` with explicit offset; service derives timeZone and queues SidecarWrite |
 | `POST /assets/jobs` | `{assetIds: [...], name: "refresh-metadata"}`; needs `job.create`. Requested only for already-present assets whose `exifInfo` does not match; fresh uploads rely on the extraction Immich queues itself. HTTP 403 is downgraded to a report warning |
 | `POST /stacks` | `{assetIds: [primary, ...]}`; the first ID becomes `primaryAssetId`. One stack per RAW + rendered pair and per 360 bundle |
 | `GET /stacks/{id}` | `id`, `primaryAssetId`, `assets[]`; confirms membership and primary after creation or on rerun |
@@ -116,3 +116,28 @@ no CLI upload/delete/watch/album options are invoked or inherited.
 - [CLI authentication](https://github.com/immich-app/immich/blob/v3.1.0/packages/cli/src/utils.ts)
 - [XMP documentation](https://docs.immich.app/features/xmp-sidecars/)
 - [ExifTool LensID conversion](https://github.com/exiftool/exiftool/blob/2200871d9cef988051d2a99d67df3bda6cbb30a8/lib/Image/ExifTool/XMP.pm)
+
+## Existing video date repair
+
+`camera-repair-time` uses the same fixed v3.1.0 contracts. It matches original
+media by checksum, checks ownership and availability, and edits only an explicit
+offset `dateTimeOriginal` via the single-asset update endpoint. The service's
+`updateExif` calls `extractTimeZone`, appends locked date properties, and queues
+`SidecarWrite`. `MetadataService.handleSidecarWrite` writes the locked date/time
+properties to the associated sidecar (or the official originalPath + .xmp path)
+and unlocks them after writing. JobService.onDone then queues AssetExtractMetadata
+with source sidecar-write, which refreshes localDateTime/fileCreatedAt. The client
+waits for these results without racing it with a separate refresh request.
+This is an official server-side workflow, not a
+client filesystem or SQL operation.
+
+Client read-back confirms date fields and preservation of unrelated metadata.
+It does not expose a receipt for SidecarWrite completion; no extraction refresh
+is issued because that could race a pending sidecar write. Reports disclose the
+asynchronous persistence boundary. Source files and source XMP remain unchanged.
+
+- [Asset date edit and updateExif](https://github.com/immich-app/immich/blob/v3.1.0/server/src/services/asset.service.ts)
+- [UpdateAssetDto: explicit date string, no separate timeZone on single-asset update](https://github.com/immich-app/immich/blob/v3.1.0/server/src/dtos/asset.dto.ts)
+- [SidecarWrite implementation](https://github.com/immich-app/immich/blob/v3.1.0/server/src/services/metadata.service.ts)
+
+- [SidecarWrite completion queues extraction](https://github.com/immich-app/immich/blob/v3.1.0/server/src/services/job.service.ts)

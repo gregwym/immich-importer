@@ -2369,7 +2369,7 @@ def main():
         if short_name != "__init__":
             setattr(sys.modules["camera_importer"], short_name, module)
         exec(compile(source, module.__file__, "exec"), module.__dict__)
-    return sys.modules["camera_importer.cli"].main()
+    return sys.modules["camera_importer.repair_time"].main()
 
 
 if __name__ == "__main__":

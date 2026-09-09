@@ -49,6 +49,8 @@ class FakeServer:
         self.user_name = "Camera Archive"
         self.version = {"major": 3, "minor": 1, "patch": 0}
         self.on_upload = lambda: None
+        self.date_updates = []
+        self.reject_date_updates = False
         state = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -142,7 +144,7 @@ class FakeServer:
                         # Real v3.1.0 duplicate upload does NOT attach the sidecar.
                         return self.reply({"id": found["id"], "status": "duplicate"})
                     identifier = str(uuid4())
-                    info = {"id": identifier, "ownerId": OWNER, "checksum": checksum,
+                    info = {"id": identifier, "ownerId": OWNER, "checksum": checksum, "type": "VIDEO",
                             "visibility": fields["visibility"][1].decode(), "isTrashed": False,
                             "isOffline": False, "libraryId": None, "exifInfo": {}, "originalFileName": filename}
                     state.assets[identifier] = {"info": info, "xmp": xmp, "media": media}
@@ -167,7 +169,16 @@ class FakeServer:
                 state.calls.append(("PUT", self.path))
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 identifier = self.path.rsplit("/", 1)[-1]
-                if not state.bad_visibility:
+                if "dateTimeOriginal" in body:
+                    if state.reject_date_updates:
+                        return self.reply({"message": "Missing required permission: asset.update"}, 403)
+                    state.date_updates.append(body)
+                    asset = state.assets[identifier]
+                    exif = asset["info"]["exifInfo"]
+                    asset["xmp"] = make_xmp({"make": exif.get("make", ""), "model": exif.get("model", ""),
+                                              "lensModel": exif.get("lensModel", "")}, asset["xmp"], body["dateTimeOriginal"])
+                    state.extract(identifier)
+                elif not state.bad_visibility:
                     state.assets[identifier]["info"]["visibility"] = body["visibility"]
                 return self.reply(state.assets[identifier]["info"])
 

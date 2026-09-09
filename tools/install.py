@@ -213,6 +213,7 @@ def install(args):
     data = prefix / 'share/immich-importer'
     command = prefix / 'bin/camera-import'
     check_wrapper(command)
+    check_wrapper(prefix / "bin/camera-repair-time")
     source = Path(__file__).resolve().parents[1] / 'camera-import.py'
     run([sys.executable, '-I', '-S', str(source), '--version'], env)
     exif = ensure_exiftool(prefix, data, perl, env, args.exiftool_archive)
@@ -226,6 +227,14 @@ def install(args):
     wrapper += 'exec ' + shlex.quote(sys.executable) + ' -B ' + shlex.quote(str(installed)) + ' "$@"\n'
     write_wrapper(command, wrapper)
     run([str(command), '--version'], env)
+    repair_source = source.with_name('camera-repair-time.py')
+    repair_script = repair_source.read_bytes()
+    repair_installed = data / 'releases' / hashlib.sha256(repair_script).hexdigest() / repair_source.name
+    atomic_write(repair_installed, repair_script)
+    repair_command = prefix / 'bin/camera-repair-time'
+    write_wrapper(repair_command, wrapper.replace(shlex.quote(str(installed)), shlex.quote(str(repair_installed))))
+    run([str(repair_command), '--version'], env)
+
     atomic_write(data / 'installation.json', json.dumps({'python': sys.executable, 'node': node, 'perl': perl,
                  'immich': immich, 'exiftool': exif, 'script': str(installed)}, indent=2).encode())
     if not args.no_profile:

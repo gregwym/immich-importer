@@ -16,7 +16,7 @@ camera-import --json /some/history-folder
 sh install.sh
 ```
 
-安装器自动安装 **camera-import、ExifTool 和 Immich CLI**，不需要 pip、sudo 或 root。已存在且可运行的工具会复用；不重新登录，不改动 API key、素材、companions 或 manifests。
+安装器自动安装 **camera-import、camera-repair-time、ExifTool 和 Immich CLI**，不需要 pip、sudo 或 root。已存在且可运行的工具会复用；不重新登录，不改动 API key、素材、companions 或 manifests。
 
 | 类别 | 安装器行为 |
 |---|---|
@@ -136,6 +136,62 @@ immich server-info
 **已有 asset 不补传 XMP。** 重复导入会读取并验证已有 metadata，修复 visibility，必要的 extraction refresh 可以重跑。已有 metadata 不正确、XMP 缺失或不生效时，返回非零；不删除重建 asset、不直接操作数据库或 managed storage。
 
 `GET /assets/{id}` 不提供独立的 sidecar 内容回读接口。本工具的新上传依赖 v3.1.0 官方 multipart sidecar 持久化路径，并验证最终 metadata。API 任务异步执行，轮询正确字段不等于提供独立的任务完成收据；工具不会声称下载核验过服务器端 XMP。完整接口依据见 [实现说明](docs/immich-3.1.0.md)。
+
+## 修复已导入视频：camera-repair-time
+
+独立命令，`sh install.sh` 同时安装；也可直接运行仓库的
+`python3 camera-repair-time.py ...`，兼容 Python 3.8.15，无需 pip。
+
+以**原素材目录**为范围，逐文件计算 SHA-1/SHA-256，通过官方 checksum 判重接口定位现有 asset。
+需要原媒体仍可读取；不会扫描整个账户猜测匹配，不会上传不存在的 asset。
+只处理本项目识别的 MP4/INSV master 和有保留价值的 360 LRV；普通 MP4 LRV 不处理。
+
+默认连接 Immich 做只读预览（`--dry-run` 同义），显示旧时间、时区和目标值：
+
+```sh
+camera-repair-time --capture-timezone America/Los_Angeles /path/to/originals
+```
+
+确认按文件名修复这些原始视频时，可显式选择 `filename`；加 `--apply` 才执行：
+
+```sh
+camera-repair-time --time-source filename --capture-timezone America/Los_Angeles /path/to/originals
+camera-repair-time --apply --time-source filename --capture-timezone America/Los_Angeles /path/to/originals
+```
+
+`--time-source auto`（默认）复用新导入的可靠带时区 metadata → 文件名规则；
+`filename` 明确忽略媒体内日期，使用文件名和配置的拍摄时区。
+此修复工具读取原视频，不使用旧 source XMP 的日期作为修复依据，也不修改该 XMP。
+同一 bundle 统一目标日期；目录只有部分 bundle 成员时仅修复目录内存在的成员，不会自动扩展到 stack 其他成员。
+不同拍摄时区的素材应按各自目录分别处理。
+
+执行前核对 owner、checksum、VIDEO 类型、managed-library 身份以及非 trash/offline 状态。
+Unknown、匹配不到 asset、时区缺失、目标冲突等任一计划错误都会阻止整批修改。
+已正确的日期跳过；重复字节只修改同一 asset 一次。网络中断可重跑，不创建重复资源。
+修改前会重新核对服务器状态，避免覆盖预览期间发生的更改。
+
+修复调用 **`PUT /assets/{id}`，只传 `dateTimeOriginal`（带显式偏移）**。
+Immich 从日期提取时区，并自动排队 `SidecarWrite`，将日期写入服务器端 XMP；
+写入成功后服务端自动触发 metadata extraction，刷新时间线日期。
+不会删除重传、操作数据库或 managed storage；asset ID、stack、visibility、相机信息和 GPS 不由工具更改。
+工具验证日期的绝对时刻、当地钟点、时区偏移，并检查上述非日期字段未改变。
+API 权限除原先的连接/校验权限外需要 `asset.update`；不要求 `job.create`，不发起 metadata refresh。
+
+**验证边界：** API 返回成功及日期匹配，不等于异步 XMP 写入任务已经完成。
+此版本没有独立 sidecar 完成回执/回读接口，所以报告明确标记
+`queued_by_immich_not_independently_verified`，不声称已逐份核验服务器 XMP。
+源媒体永远不写入。
+
+`--apply` 在首次修改前及每个文件处理后原子保存审计记录：
+
+```text
+$MANIFEST_ROOT/time-repairs/<UTC-time>-<unique-id>.json
+```
+
+包含 source、asset ID、checksum、目标时间、旧/新时间和逐项状态，不含 API key。
+无法保存初始审计记录时不会开始修复。执行过程失败可能已完成部分修改，返回非零并保留记录；不自动回滚。
+只读预览不写报告或其他持久文件。支持 `--json`、`--quiet`、`--config`、`--manifest-root`、
+`--verify-timeout` 以及已有环境变量配置。这个工具不输出任何可格式化源卡的结论。
 
 ## 视频拍摄时间和时区
 
