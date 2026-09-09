@@ -209,9 +209,11 @@ camera-import --capture-timezone America/Los_Angeles /some/folder
 
 也支持环境变量 `CAMERA_CAPTURE_TIMEZONE` 或 config JSON 的 `capture_timezone`。
 默认不猜时区；这意味着缺少带时区 metadata 的视频在未配置时区时会报 NEEDS REVIEW，不上传。
-IANA 时区依据**拍摄日期**处理夏令时；Python 3.8 使用系统 zoneinfo 和 libc，无需 pip。
-系统缺少对应时区数据会明确失败。重复/不存在的夏令时钟点需要显式偏移，例如
-`--capture-timezone=-07:00`。拍摄地不同的目录应使用各自时区，不应以 NAS 或当前浏览器时区推断。
+IANA 时区依据**拍摄日期**处理夏令时；Python 3.8 没有 zoneinfo 模块，转换交给 libc，无需 pip。
+DSM 没有 `/usr/share/zoneinfo` 数据库，因此脚本内置了全部 IANA 时区当前的 POSIX 规则（取自 tzdata 的 TZif footer，约 500 条），
+有系统 zoneinfo 时优先使用（含完整历史规则，`TZDIR` 环境变量可指定目录）。内置规则是各时区最近一次变更后的规则，
+更早的夏令时历史（例如美国 2007 年前）不在其中。也可以直接给 POSIX 规则，例如 `PST8PDT,M3.2.0,M11.1.0`。
+重复/不存在的夏令时钟点需要显式偏移，例如 `--capture-timezone=-07:00`。拍摄地不同的目录应使用各自时区，不应以 NAS 或当前浏览器时区推断。
 
 同一 360 bundle 共用一个拍摄时间及偏移：优先共享成员中可靠的时间，其他成员从中补齐；
 所有成员都没有时使用共同的文件名。可靠成员日期/偏移冲突，或与文件名钟点相差超过 2 秒时要求 review。

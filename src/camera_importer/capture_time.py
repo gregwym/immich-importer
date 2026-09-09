@@ -6,6 +6,29 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .model import ImportFailure
+from .tzrules import RULES
+
+ZONEINFO_ROOTS = ('/usr/share/zoneinfo', '/usr/share/zoneinfo.default', '/usr/lib/zoneinfo', '/usr/share/lib/zoneinfo')
+POSIX_RULE = re.compile(r'^(?:<[+-]?\d+>|[A-Za-z]{3,})[+-]?\d{1,2}(?::\d{2}(?::\d{2})?)?(?:(?:<[+-]?\d+>|[A-Za-z]{3,})(?:[+-]?\d{1,2}(?::\d{2}(?::\d{2})?)?)?(?:,[JM]?[\d./-]+(?:/[+-]?\d{1,3}(?::\d{2}(?::\d{2})?)?)?){2})?$')
+
+
+def libc_zone(zone):
+    """TZ value libc can apply for an IANA name or POSIX rule; None if unknown.
+
+    A system zoneinfo file carries full history; DSM ships none, so the bundled
+    current-rule table (tzdata footers) or an explicit POSIX rule is used instead.
+    """
+    if re.fullmatch(r'[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)+', zone):
+        roots = ([os.environ['TZDIR']] if os.environ.get('TZDIR') else []) + list(ZONEINFO_ROOTS)
+        for root in roots:
+            if (Path(root) / zone).is_file():
+                return ':' + str(Path(root) / zone)
+        if zone in RULES:
+            return RULES[zone]
+        return None
+    if POSIX_RULE.match(zone):
+        return zone
+    return None
 
 TIME_TAGS = ('DateTimeOriginal', 'SubSecDateTimeOriginal', 'CreationDate',
              'OffsetTimeOriginal', 'CreateDate', 'MediaCreateDate', 'TrackCreateDate')
@@ -33,18 +56,19 @@ def localize(value, zone):
                 raise ImportFailure('Invalid capture timezone offset')
             offset = (hours * 60 + minutes) * (1 if zone[0] == '+' else -1)
         return value.replace(tzinfo=timezone(timedelta(minutes=offset)))
-    # Python 3.8 has no zoneinfo. DSM/Linux libc uses the installed zoneinfo DB.
+    # Python 3.8 has no zoneinfo; libc does the conversion from a zoneinfo file,
+    # the bundled POSIX rule for the zone, or a POSIX rule given directly.
     # This importer is single-threaded; restore TZ even on conversion failure.
-    if not re.fullmatch(r'[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)+', zone):
-        raise ImportFailure('Invalid IANA capture timezone')
-    roots = ('/usr/share/zoneinfo', '/usr/share/zoneinfo.default', '/usr/lib/zoneinfo')
-    zonefile = next((str(Path(root) / zone) for root in roots if (Path(root) / zone).is_file()), None)
-    if not zonefile or not hasattr(time, 'tzset'):
-        raise ImportFailure('Capture timezone unavailable in system zoneinfo: ' + zone)
+    tz = libc_zone(zone)
+    if tz is None:
+        raise ImportFailure('Unknown capture timezone: ' + zone + ' (use an IANA name such as America/Los_Angeles, '
+                            'a POSIX rule such as PST8PDT,M3.2.0,M11.1.0, or a fixed offset such as -07:00)')
+    if not hasattr(time, 'tzset'):
+        raise ImportFailure('Timezone conversion needs a POSIX libc; supply a fixed offset such as -07:00')
     previous = os.environ.get('TZ')
     candidates = {}
     try:
-        os.environ['TZ'] = ':' + zonefile
+        os.environ['TZ'] = tz
         time.tzset()
         for dst in (-1, 0, 1):
             stamp = time.mktime(value.timetuple()[:8] + (dst,))

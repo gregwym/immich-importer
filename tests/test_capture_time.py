@@ -47,6 +47,19 @@ class CaptureTimeTest(unittest.TestCase):
         self.assertEqual(os.environ.get('TZ'), previous)
         self.assertEqual(localize(datetime(2026, 11, 1, 1, 30), '-07:00').isoformat(), '2026-11-01T01:30:00-07:00')
 
+    def test_zone_without_system_zoneinfo_uses_bundled_rules(self):
+        from camera_importer import capture_time
+        with patch.object(capture_time, 'ZONEINFO_ROOTS', ('/nonexistent-zoneinfo',)), patch.dict(os.environ, {'TZDIR': '/nonexistent-tzdir'}):
+            self.assertEqual(capture_time.libc_zone('America/Los_Angeles'), 'PST8PDT,M3.2.0,M11.1.0')
+            self.assertEqual(localize(datetime(2026, 9, 8, 18, 24, 40), 'America/Los_Angeles').isoformat(), '2026-09-08T18:24:40-07:00')
+            self.assertEqual(localize(datetime(2026, 1, 8, 18), 'Asia/Shanghai').isoformat(), '2026-01-08T18:00:00+08:00')
+            self.assertEqual(localize(datetime(2026, 1, 8, 18), 'PST8PDT,M3.2.0,M11.1.0').isoformat(), '2026-01-08T18:00:00-08:00')
+            with self.assertRaisesRegex(ImportFailure, 'Unknown capture timezone'):
+                localize(datetime(2026, 1, 8, 18), 'Mars/Olympus_Mons')
+            with self.assertRaises(ImportFailure):
+                localize(datetime(2026, 11, 1, 1, 30), 'America/Los_Angeles')
+        self.assertIsNone(capture_time.libc_zone('rm -rf /'))
+
     def test_verifies_instant_wall_clock_and_offset(self):
         item = self.item()
         item.capture_time = '2026-09-08T18:24:40-07:00'
