@@ -270,7 +270,7 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                         item.status = "uploaded" if status == "created" else "already_present"
                         log(item.relative + " SHA-256 " + item.sha256)
                     resolved[item.sha1] = item.asset_id
-                    api.verify(item, metadata_verify)
+                    api.verify_identity(item)
                     log(item.relative + ": " + item.status)
                 except (OSError, ImportFailure) as error:
                     fail(item, error)
@@ -278,6 +278,8 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                     # Whatever the outcome, the hash is a fact about the bytes.
                     hashcache.record(index, item, now)
             identity_checks()
+            if metadata_verify:
+                api.verify_metadata([i for i in pending if i.identity_verified and not i.error], progress)
             for item in plan.items:
                 if item.route == "companion":
                     hashcache.record(index, item, now)
@@ -286,7 +288,9 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
             except (OSError, ImportFailure):
                 plan.errors.append("Failed to persist hash index")
             for key, members in plan.stacks.items():
-                if any(m.error or not m.asset_id for m in members):
+                # Stacking needs verified asset identities, not finished metadata
+                # extraction: a slow extraction queue must not leave a bundle unstacked.
+                if any(not m.identity_verified or not m.asset_id or (m.error and not m.error.startswith("Metadata verification timed out")) for m in members):
                     continue
                 primary = next(m for m in members if m.relative == key)
                 children = [m for m in members if m is not primary]

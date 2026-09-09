@@ -125,7 +125,7 @@ immich server-info
 3. **XMP 用于给视频补充相机信息。** MP4 / INSV 的 embedded 值与目标字符串（Make `DJI` / Model `DJI OsmoPocket3`；Make `Arashi Vision` / Model `Insta360 OneRS` 加镜头）不一致时生成 XMP；已一致则不生成。Insta360 的 Make 采用相机在照片 EXIF 里写的公司名 `Arashi Vision`，使视频与照片一致。Pocket 3 的照片 EXIF Model 是产品代号 `PP-101`，视频 metadata 则是 `DJI OsmoPocket3`；两者都识别为 Pocket 3，照片按规则 2 保留 `PP-101`。
 4. `tiff:Make` / `tiff:Model` 保存指定字符串；镜头用 **`exifEX:LensModel`**。
 5. 小型 XMP 在内存中生成，作为 multipart `sidecarData` 和原媒体 `assetData` **同一请求上传**。XMP part 文件名是 `original.ext.xmp`。媒体由文件句柄流式发送，不复制到 staging，也不整体载入内存。
-6. API 读取 asset，验证 owner、SHA-1、managed-library 身份、visibility 和相机字段；请求 `refresh-metadata`，限时轮询到期望值。
+6. 每个 asset 上传后立即验证 owner、SHA-1、managed-library 身份和 visibility；相机字段在**全部上传完成后统一轮询**（`verify_timeout` 内），Immich 在此期间自行完成提取，不再每个文件单独等待。只有已存在且字段不符的 asset 才请求 `refresh-metadata`，新上传不额外触发重新提取。stack 依据已验证的 asset 身份建立，metadata 提取慢不会导致 bundle 漏 stack；超时的文件报 `Metadata verification timed out`，重跑即可完成验证。
 
 **Stack 规则（RAW + JPG、360 bundle 共用）。** 同一目录下同名的 `JPG/JPEG/INSP` 与 `DNG` 视为同一张照片：两者都上传到 timeline，然后调用 `POST /stacks` 组成一个 Immich stack，JPG 为主图，DNG 作为堆叠版本；单独的 DNG 按普通照片进 timeline。360 bundle 同理，LRV 为主。所有成员上传并验证后才建 stack。重复运行会用 `GET /stacks/{id}` 核对：已有 stack 已包含全部成员则直接接受，不改主 asset（例如本地删除 LRV 后，服务器上的 stack 仍以 LRV 为主）；已有 stack 只由本次成员组成但缺少新成员（之前部分导入的 bundle）时，先 `DELETE /stacks/{id}` 解散再重建，解散不删除任何 asset；已有 stack 混有其他 asset 时报 `STACK CONFLICT` 并失败，不自动拆并。同一 stack 内两个成员字节完全相同（同一个 Immich asset）也报错。API key 需要 `stack.create`、`stack.read`、`stack.delete` 权限。
 

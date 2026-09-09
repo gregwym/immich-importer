@@ -114,14 +114,7 @@ class FakeServer:
                     if state.forbid_jobs:
                         return self.reply({"message": "Missing required permission: job.create", "error": "Forbidden", "statusCode": 403}, 403)
                     for identifier in json.loads(body)["assetIds"]:
-                        asset = state.assets[identifier]
-                        if not state.ignore_sidecar and asset["xmp"]:
-                            root = ET.fromstring(asset["xmp"])
-                            props = {}
-                            for element in root.iter():
-                                props.update({k.rsplit("}", 1)[-1]: v for k, v in element.attrib.items()})
-                            asset["info"]["exifInfo"] = {"make": props.get("Make"), "model": props.get("Model"),
-                                                        "lensModel": props.get("LensID", props.get("LensModel"))}
+                        state.extract(identifier)
                     return self.reply(None, 204)
                 if self.path == "/api/assets":
                     if state.upload_failure:
@@ -154,6 +147,7 @@ class FakeServer:
                             "isOffline": False, "libraryId": None, "exifInfo": {}, "originalFileName": filename}
                     state.assets[identifier] = {"info": info, "xmp": xmp, "media": media}
                     state.uploads.append(fields)
+                    state.extract(identifier)  # Immich queues extraction itself after upload.
                     state.on_upload()
                     if state.drop_response:
                         self.close_connection = True
@@ -181,6 +175,16 @@ class FakeServer:
         self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         self.thread.start()
         self.url = "http://127.0.0.1:" + str(self.http.server_port) + "/api"
+
+    def extract(self, identifier):
+        asset = self.assets[identifier]
+        if not self.ignore_sidecar and asset["xmp"]:
+            root = ET.fromstring(asset["xmp"])
+            props = {}
+            for element in root.iter():
+                props.update({k.rsplit("}", 1)[-1]: v for k, v in element.attrib.items()})
+            asset["info"]["exifInfo"] = {"make": props.get("Make"), "model": props.get("Model"),
+                                        "lensModel": props.get("LensID", props.get("LensModel"))}
 
     def close(self):
         self.http.shutdown()
@@ -601,6 +605,18 @@ class IntegrationTest(Workspace):
         self.assertEqual(len(members), 3)
         self.assertEqual(len(self.server.assets), 3)
 
+    def test_slow_extraction_does_not_block_stacking(self):
+        for name in TRIO:
+            self.put(name)
+        self.server.ignore_sidecar = True  # extraction never completes for the sidecar fields
+        report = self.run_import()
+        self.assertEqual(report["exitCode"], 1)
+        self.assertEqual(len(self.server.stacks), 1)
+        self.assertTrue(all("timed out" in i["error"] for i in report["items"] if i["route"] == "timeline"))
+        self.assertTrue(all(i["stackId"] for i in report["items"] if i["route"] == "timeline"))
+        # Uploads all happen before any metadata wait: the jobs endpoint is never used for fresh uploads.
+        self.assertFalse(any(path == "/api/assets/jobs" for _, path in self.server.calls))
+
     def test_rerun_fills_missing_manifest_asset_id(self):
         for name in TRIO:
             self.put(name)
@@ -694,7 +710,13 @@ class IntegrationTest(Workspace):
     def test_missing_job_permission_is_a_warning_when_extraction_matches(self):
         self.put("DJI_20251226075842_0001_D.MP4")
         self.server.forbid_jobs = True
-        # Without the refresh job the fake server never applies the sidecar: verification must fail.
+        # A fresh upload never needs the refresh job: Immich extracts on its own.
+        report = self.run_import()
+        self.assertEqual(report["exitCode"], 0, report["errors"])
+        self.assertEqual(report["warnings"], [])
+        self.assertFalse(any(path == "/api/assets/jobs" for _, path in self.server.calls))
+        # An existing asset with wrong metadata asks for a refresh; without the permission it is a warning.
+        next(iter(self.server.assets.values()))["info"]["exifInfo"] = {}
         report = self.run_import()
         self.assertEqual(report["exitCode"], 1)
         self.assertTrue(any("job.create" in w for w in report["warnings"]))
@@ -707,7 +729,7 @@ class IntegrationTest(Workspace):
             self.server.on_upload = lambda: [a["info"].__setitem__("exifInfo", {"make": "DJI", "model": "PP-101"}) for a in self.server.assets.values()]
             report = self.run_import()
         self.assertEqual(report["exitCode"], 0, report["errors"])
-        self.assertEqual(report["warnings"], ["Metadata refresh not permitted (API key lacks job.create); verified Immich's own extraction instead"])
+        self.assertEqual(report["warnings"], [])
         self.assertEqual(report["cameraMetadata"]["verified"], 1)
 
     def test_upload_failure_does_not_leak_secret(self):

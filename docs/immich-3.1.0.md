@@ -17,7 +17,7 @@ Paths below are relative to the configured `/api` URL.
 | `POST /assets` | Streaming multipart: `assetData`, optional `sidecarData`, `fileCreatedAt`, `fileModifiedAt`, `visibility`. No `filename` field: `canUploadFile` checks every file part against `body.filename \|\| file.originalName`, so a `filename` form field parsed before `sidecarData` makes the sidecar fail `isSidecar` with HTTP 400 "Unsupported file type". The asset part's own filename becomes `originalFileName` |
 | `GET /assets/{id}` | `id`, `ownerId`, base64 SHA-1 `checksum`, `visibility`, `libraryId`, `isTrashed`, `isOffline`, `exifInfo` |
 | `PUT /assets/{id}` | Update only `visibility`, then verify |
-| `POST /assets/jobs` | `{assetIds: [...], name: "refresh-metadata"}`; needs `job.create`. HTTP 403 is downgraded to a report warning: Immich already extracts metadata after upload, and verification polls that result |
+| `POST /assets/jobs` | `{assetIds: [...], name: "refresh-metadata"}`; needs `job.create`. Requested only for already-present assets whose `exifInfo` does not match; fresh uploads rely on the extraction Immich queues itself. HTTP 403 is downgraded to a report warning |
 | `POST /stacks` | `{assetIds: [primary, ...]}`; the first ID becomes `primaryAssetId`. One stack per RAW + rendered pair and per 360 bundle |
 | `GET /stacks/{id}` | `id`, `primaryAssetId`, `assets[]`; confirms membership and primary after creation or on rerun |
 | `DELETE /stacks/{id}` | Unstacks without deleting assets; used only to rebuild a stack made solely of this importer's members |
@@ -75,7 +75,10 @@ extraction failure must never silently produce a success report.
 The API does not expose a standalone sidecar download/association field in
 `AssetResponseDto`. The importer does not claim such a read-back. New sidecar
 persistence relies on the successful official upload path; API verification
-checks final fields. A metadata refresh request is asynchronous: matching fields
+checks final fields. Identity (owner, checksum, library, visibility) is checked
+right after each upload; camera fields are polled for all assets together once
+every upload is done, so the server's extraction queue is waited on once rather
+than per file. A metadata refresh request is asynchronous: matching fields
 are a condition check, not a task-completion receipt. Existing resources are
 checked but never receive replacement sidecars.
 

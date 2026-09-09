@@ -274,7 +274,8 @@ class Immich:
         if "libraryId" not in info or info["libraryId"] is not None:
             raise ImportFailure("Asset is not a confirmed managed-library asset")
 
-    def verify(self, item, metadata=True):
+    def verify_identity(self, item):
+        """Owner, checksum, managed-library status and visibility of the asset."""
         info = self.info(item.asset_id)
         self.validate_identity(item, info)
         if info.get("visibility") != item.route:
@@ -283,13 +284,19 @@ class Immich:
             self.validate_identity(item, info)
             if info.get("visibility") != item.route:
                 raise ImportFailure("Visibility verification failed")
-        if not metadata:
-            return
+        item.identity_verified = True
+        return info
+
+    def metadata_matches(self, item, info):
+        exif = info.get("exifInfo") or {}
+        return info.get("visibility") == item.route and all(exif.get(k) == v for k, v in item.expected.items())
+
+    def request_refresh(self, item):
         # Re-extraction checks the persistent source, not a transient DB edit.
-        # Immich extracts metadata on its own after a new upload, so a key
-        # without job.create still gets verified from that extraction.
+        # A key without job.create still gets verified from Immich's own extraction.
         try:
             self.request("POST", "/assets/jobs", json={"assetIds": [item.asset_id], "name": "refresh-metadata"})
+            return True
         except HttpFailure as error:
             if error.status != 403:
                 raise
@@ -297,17 +304,46 @@ class Immich:
             if warning not in self.warnings:
                 self.warnings.append(warning)
             self.log(item.relative + ": " + str(error))
+            return False
+
+    def verify_metadata(self, items, progress=lambda message: None):
+        """Poll all assets together until each shows the expected camera fields.
+
+        Immich extracts metadata asynchronously after upload; polling every asset
+        in one pass lets the server work through its queue while we wait once,
+        instead of once per file. Failures are recorded per item.
+        """
+        waiting = [i for i in items if not i.error and i.asset_id]
+        for item in waiting:
+            if item.status == "already_present":
+                try:
+                    if not self.metadata_matches(item, self.info(item.asset_id)):
+                        self.request_refresh(item)
+                except ImportFailure as error:
+                    item.status, item.error = "failed", str(error)
+        waiting = [i for i in waiting if not i.error]
         deadline = time.monotonic() + self.config.verify_timeout
-        while True:
-            info = self.info(item.asset_id)
-            self.validate_identity(item, info)
-            exif = info.get("exifInfo") or {}
-            if info.get("visibility") == item.route and all(exif.get(k) == v for k, v in item.expected.items()):
-                self.log("Metadata verified: " + item.relative)
-                item.verified = True
+        while waiting:
+            progress("verifying metadata: " + str(len(waiting)) + " asset(s) pending")
+            for item in list(waiting):
+                try:
+                    info = self.info(item.asset_id)
+                    self.validate_identity(item, info)
+                    if self.metadata_matches(item, info):
+                        self.log("Metadata verified: " + item.relative)
+                        item.verified = True
+                        waiting.remove(item)
+                except ImportFailure as error:
+                    item.status, item.error = "failed", str(error)
+                    waiting.remove(item)
+            if not waiting:
                 return
             if time.monotonic() >= deadline:
-                mismatches = [k for k, v in item.expected.items() if exif.get(k) != v]
-                raise ImportFailure("Metadata/visibility verification timed out: " + ", ".join(mismatches) +
-                                    "; existing assets are not patched with XMP")
+                for item in waiting:
+                    exif = (self.info(item.asset_id).get("exifInfo") or {})
+                    mismatches = [k for k, v in item.expected.items() if exif.get(k) != v]
+                    tail = ("; Immich has not extracted the uploaded sidecar yet, rerun to verify" if item.status == "uploaded"
+                            else "; existing assets are not patched with XMP")
+                    item.status, item.error = "failed", "Metadata verification timed out: " + ", ".join(mismatches) + tail
+                return
             time.sleep(min(self.config.poll_interval, max(0, deadline - time.monotonic())))

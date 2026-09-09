@@ -31,6 +31,7 @@ class Item:
     asset_id: Optional[str] = None
     status: str = "planned"
     verified: bool = False
+    identity_verified: bool = False
     error: Optional[str] = None
 
     def public(self):
