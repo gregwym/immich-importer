@@ -117,6 +117,31 @@ class CaptureTimeTest(unittest.TestCase):
         value, source = choose([self.photo()], 'America/Los_Angeles')
         self.assertEqual(value.isoformat(), '2026-09-08T18:24:40-07:00')
 
+    def test_utc_clock_jitter_and_dst_blind_cameras(self):
+        from datetime import timedelta
+        from camera_importer.capture_time import utc_clock_offset
+        def video(stamp, name='VID_20240315_181418_10_004.mp4'):
+            item = Item(Path(name), name, 'timeline', 'test')
+            item.time_tags = {'CreateDate': stamp}
+            return item
+        # One second of jitter between the two clocks still proves -08:00.
+        self.assertEqual(utc_clock_offset(video('2024:03:16 02:14:19')), timedelta(hours=-8))
+        self.assertIsNone(utc_clock_offset(video('2024:03:16 02:19:19')))  # 5 minutes off: no evidence
+        # 15 March 2024 is PDT, but the Pocket 3's "UTC" uses fixed PST: the configured zone wins.
+        value, source = choose([video('2024:03:16 02:14:19')], 'America/Los_Angeles')
+        self.assertEqual(value.isoformat(), '2024-03-15T18:14:18-07:00')
+        self.assertIn('ignores DST', source)
+        # Same file without a configured zone: the file's own offset is all there is.
+        value, source = choose([video('2024:03:16 02:14:19')], '')
+        self.assertEqual((value.isoformat(), source), ('2024-03-15T18:14:18-08:00', 'metadata:utc-vs-filename'))
+        # A genuinely different offset (shot in Tokyo) beats the configured home zone.
+        value, source = choose([video('2024:03:15 09:14:18')], 'America/Los_Angeles')
+        self.assertEqual(value.isoformat(), '2024-03-15T18:14:18+09:00')
+        self.assertIn('differs from configured timezone', source)
+        # Agreement in winter: plain evidence.
+        value, source = choose([video('2024:01:16 02:14:19', 'VID_20240115_181418_10_004.mp4')], 'America/Los_Angeles')
+        self.assertEqual((value.isoformat(), source), ('2024-01-15T18:14:18-08:00', 'metadata:utc-vs-filename'))
+
     def test_utc_create_date_proves_the_offset_for_videos(self):
         value, source = choose([self.item('00', {'CreateDate': '2026:09:09 01:24:40'})], '')
         self.assertEqual((value.isoformat(), source), ('2026-09-08T18:24:40-07:00', 'metadata:utc-vs-filename'))

@@ -187,11 +187,21 @@ def utc_clock_offset(item):
         stamp = parse_date(item.time_tags.get(key))
         if named is None or stamp is None or stamp.tzinfo is not None:
             continue
-        delta = named - stamp
-        seconds = round(delta.total_seconds())
-        if seconds and seconds % 900 == 0 and abs(seconds) <= 14 * 3600:
-            return timedelta(seconds=seconds)
+        seconds = round((named - stamp).total_seconds())
+        # The two clocks are written a second or so apart; snap to the 15-minute grid.
+        snapped = round(seconds / 900) * 900
+        if snapped and abs(seconds - snapped) <= 10 and abs(snapped) <= 14 * 3600:
+            return timedelta(seconds=snapped)
     return None
+
+
+def standard_offset(zone):
+    """The zone's standard (non-DST) offset, or None for fixed offsets and unknown zones."""
+    rule = posix_rule(zone) if zone and not re.fullmatch(r'[+-]\d{2}:\d{2}', zone) and zone not in ('UTC', 'Z') else None
+    if not rule:
+        return None
+    parsed = PosixZone(rule)
+    return timedelta(seconds=parsed.std) if parsed.dst is not None else None
 
 
 SHIFT = re.compile(r'^([+-])?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$')
@@ -261,6 +271,18 @@ def choose(members, zone, shift=None):
         return None, 'no camera clock'
     if offsets:
         offset = offsets.pop()
+        if zone:
+            try:
+                configured = localize(named + shift, zone)
+            except ImportFailure:
+                configured = None
+            if configured is not None and configured.utcoffset() != offset:
+                if offset == standard_offset(zone):
+                    # Camera derives "UTC" from a fixed standard-time offset and ignores
+                    # DST: the wall clock is right, its UTC is an hour off. Trust the zone.
+                    return configured, _shifted('filename + configured timezone (file UTC offset ignores DST)', shift)
+                # A genuinely different offset: the file was shot elsewhere; the file wins.
+                return (named + shift).replace(tzinfo=timezone(offset)), _shifted('metadata:utc-vs-filename (differs from configured timezone)', shift)
         return (named + shift).replace(tzinfo=timezone(offset)), _shifted('metadata:utc-vs-filename', shift)
     if zone:
         return localize(named + shift, zone), _shifted('filename + configured timezone', shift)

@@ -237,7 +237,8 @@ QuickTime 整数 `CreateDate` / `MediaCreateDate` 的 UTC 语义不能仅凭字�
 
 1. 带时区的日期（`DateTimeOriginal` / `SubSecDateTimeOriginal` 配 `OffsetTimeOriginal`，或带时区的 `CreationDate`）：直接采用，导入时不写日期 XMP，由 Immich 自行提取。
 2. 不带时区的 EXIF `DateTimeOriginal`（EXIF 2.31 之前的照片，如 Pocket 3、ONE RS 的 JPG / DNG / INSP）：**原样尊重，不做任何解释**，配置的时区对它无效；修复工具显示 `exif_respected`。Immich 会把它当 UTC 存，墙上时间正确。
-3. 视频的 QuickTime `CreateDate` 是 UTC，与文件名里的本地钟点之差是文件自己证明的时区（15 分钟整数倍、±14 小时内、非零）：按此偏移写入，不需要任何配置。DJI 视频属于这种情况。
+3. 视频的 QuickTime `CreateDate` 是 UTC，与文件名里的本地钟点之差是文件自己证明的时区（取整到 15 分钟、允许几秒抖动、±14 小时内、非零）：按此偏移写入，不需要任何配置。DJI 视频属于这种情况。
+   例外：Pocket 3 计算「UTC」用的是固定的标准时偏移，不知道夏令时，夏季文件会声称 `-08:00`。配置了拍摄时区且文件偏移恰好等于该时区的标准时偏移时，以配置时区为准（来源注明 `file UTC offset ignores DST`）；文件偏移与配置时区完全不同（在外地拍摄）时仍以文件为准。
 4. 只剩文件名钟点时（相机把本地时间写进了 UTC 字段，或视频没有 `CreateDate`）：用配置的拍摄时区解释；没配置就留给 Immich，不报错，报告 `captureSources` 里计为 `no timezone evidence`，修复工具显示 `no_timezone_evidence`。
 
 **唯一会改动文件所写钟点的是显式的 `--clock-shift`**（相机时钟设错）：它加在相机钟点上，对以上四种情况一律生效；不带时区的 EXIF 移位后仍不带时区。
