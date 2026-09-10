@@ -31,6 +31,17 @@ def parser():
     return p
 
 
+def capture_line(item):
+    """How the capture date will reach Immich, for one dry-run item."""
+    source = item.get("captureTimeSource") or "no camera clock"
+    if not item.get("captureTime"):
+        if "respected" in source:
+            return "capture: EXIF date kept as written, Immich reads it (" + source + ")"
+        return "capture: left to Immich (" + source + ")"
+    delivery = "Immich extracts it from the file" if source.startswith("metadata:zoned") else "delivered in XMP DateTimeOriginal"
+    return "capture: " + item["captureTime"] + " (" + source + ") -> " + delivery
+
+
 def display(report):
     if "checks" in report:
         print("Configuration Check\n===================")
@@ -49,12 +60,13 @@ def display(report):
                     if item["route"] == route:
                         print("  + " + item["path"])
                         if route == "timeline":
-                            if item.get("captureTime"):
-                                print("      capture: " + item["captureTime"] + " (" + item["captureTimeSource"] + ")")
-                            print("    embedded " + json.dumps(item["embeddedMetadata"], ensure_ascii=False))
+                            print("    embedded " + json.dumps(item["embeddedMetadata"], ensure_ascii=False)
+                                  + ("  times " + json.dumps(item.get("embeddedTimeMetadata") or {}, ensure_ascii=False)
+                                     if item.get("embeddedTimeMetadata") else "  times {}"))
                             print("    expected " + json.dumps(item["expectedMetadata"], ensure_ascii=False)
                                   + (" -> XMP sidecar" if item["xmpPrepared"] else " (as-is)")
                                   + ("; stack with " + item["stackKey"] if item["stackKey"] and item["stackKey"] != item["path"] else ""))
+                            print("    " + capture_line(item))
                         if item.get("error"):
                             print("    ERROR " + item["error"])
         for route, counts in report["counts"].items():

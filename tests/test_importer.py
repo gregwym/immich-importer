@@ -1014,6 +1014,30 @@ class AuthTest(unittest.TestCase):
                 config = load_config(parser().parse_args(["--config", str(path), "--companion-root", "/tmp/cli"]))
             self.assertEqual(config.companion_root, Path("/tmp/cli"))
 
+    def test_dry_run_display_explains_capture_dates(self):
+        from camera_importer.cli import display
+        base = {"route": "timeline", "embeddedMetadata": {"make": "DJI"}, "expectedMetadata": {"make": "DJI"},
+                "xmpPrepared": True, "stackKey": None, "error": None}
+        items = [dict(base, path="a.mp4", captureTime="2026-09-08T18:24:40-07:00", captureTimeSource="metadata:utc-vs-filename",
+                      embeddedTimeMetadata={"CreateDate": "2026:09:09 01:24:40"}),
+                 dict(base, path="b.jpg", captureTime="", captureTimeSource="metadata:naive:respected", xmpPrepared=False,
+                      embeddedTimeMetadata={"DateTimeOriginal": "2026:09:08 18:24:40"}),
+                 dict(base, path="c.insv", captureTime="", captureTimeSource="no timezone evidence", embeddedTimeMetadata={}),
+                 dict(base, path="d.jpg", captureTime="2026-09-08T18:24:40-07:00", captureTimeSource="metadata:zoned:DateTimeOriginal",
+                      xmpPrepared=False, embeddedTimeMetadata={"DateTimeOriginal": "2026:09:08 18:24:40", "OffsetTimeOriginal": "-07:00"})]
+        report = {"source": "/x", "dryRun": True, "items": items, "counts": {"timeline": {"planned": 4}},
+                  "cameraMetadata": {}, "hashSources": {}, "captureSources": {}, "bundles": {"complete": 0, "lrvMissing": [], "incomplete": {}},
+                  "ignored": {}, "stacks": {}, "skippedDirectories": [], "unknown": [], "errors": [], "result": "DRY RUN OK"}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            display(report)
+        text = output.getvalue()
+        self.assertIn('times {"CreateDate": "2026:09:09 01:24:40"}', text)
+        self.assertIn("capture: 2026-09-08T18:24:40-07:00 (metadata:utc-vs-filename) -> delivered in XMP DateTimeOriginal", text)
+        self.assertIn("capture: EXIF date kept as written, Immich reads it (metadata:naive:respected)", text)
+        self.assertIn("capture: left to Immich (no timezone evidence)", text)
+        self.assertIn("(metadata:zoned:DateTimeOriginal) -> Immich extracts it from the file", text)
+
     def test_json_error_is_single_object(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
