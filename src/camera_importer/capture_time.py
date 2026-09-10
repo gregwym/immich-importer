@@ -149,14 +149,48 @@ def filename_date(item):
     return datetime.strptime(''.join(match.groups()), '%Y%m%d%H%M%S') if match else None
 
 
+PHOTO_SUFFIXES = ('.jpg', '.jpeg', '.dng', '.insp')
+
+
 def explicit_date(tags):
+    """A date the file states together with its timezone."""
     for key in ('SubSecDateTimeOriginal', 'DateTimeOriginal', 'CreationDate'):
         value = parse_date(tags.get(key))
         if value:
             if value.tzinfo is None and key != 'CreationDate' and tags.get('OffsetTimeOriginal'):
                 value = localize(value, str(tags['OffsetTimeOriginal']))
             if value.tzinfo is not None:
-                return value, 'metadata:' + key
+                return value, 'metadata:zoned:' + key
+    return None
+
+
+def naive_exif_date(item):
+    """EXIF DateTimeOriginal without an offset (EXIF < 2.31 or camera omits it)."""
+    if item.path.suffix.lower() not in PHOTO_SUFFIXES:
+        return None
+    for key in ('SubSecDateTimeOriginal', 'DateTimeOriginal'):
+        value = parse_date(item.time_tags.get(key))
+        if value and value.tzinfo is None:
+            return value
+    return None
+
+
+def utc_clock_offset(item):
+    """Offset the file proves itself: QuickTime CreateDate is UTC, the filename is the local clock.
+
+    Returns a timedelta when the difference is a plausible timezone offset
+    (multiple of 15 minutes, within +-14h, not zero: a zero difference means the
+    camera wrote local time into the UTC field and proves nothing).
+    """
+    named = filename_date(item)
+    for key in ('CreateDate', 'MediaCreateDate', 'TrackCreateDate'):
+        stamp = parse_date(item.time_tags.get(key))
+        if named is None or stamp is None or stamp.tzinfo is not None:
+            continue
+        delta = named - stamp
+        seconds = round(delta.total_seconds())
+        if seconds and seconds % 900 == 0 and abs(seconds) <= 14 * 3600:
+            return timedelta(seconds=seconds)
     return None
 
 
@@ -191,43 +225,50 @@ def describe_shift(shift):
 
 
 def choose(members, zone, shift=None):
-    """Capture instant for one file or 360 bundle.
+    """Capture instant for one file or 360 bundle: (datetime or None, source).
 
-    `shift` corrects a wrong camera clock: it is applied to the camera's own
-    clock (metadata or filename) before any timezone interpretation, so it
-    affects both sources equally and the filename cross-check still holds.
+    What the file states is authoritative, in this order: a zoned date; a bare
+    EXIF date (respected as written, so None: nothing to deliver); a UTC
+    QuickTime clock whose difference from the filename clock proves the offset;
+    the filename clock interpreted in the configured timezone. A file that
+    states nothing about its timezone and has no configured one is left to
+    Immich (None). `shift` corrects a wrong camera clock and is the only way a
+    stated wall-clock time is ever changed.
     """
-    value, source = _choose(members, zone)
-    if shift:
-        if source.startswith('metadata:'):
-            value = value + shift
-        else:
-            value = localize(filename_date(members[0]) + shift, zone)
-        source += '; camera clock shifted ' + describe_shift(shift)
-    return value, source
-
-
-def _choose(members, zone):
-    dates = []
-    for item in members:
-        selected = explicit_date(item.time_tags)
-        if selected:
-            dates.append(selected)
+    shift = shift or timedelta(0)
+    dates = [explicit_date(i.time_tags) for i in members]
+    dates = [d for d in dates if d]
     if dates:
         value, source = dates[0]
         if any(abs((other - value).total_seconds()) > 1 or other.utcoffset() != value.utcoffset()
                for other, _ in dates[1:]):
             raise ImportFailure('NEEDS REVIEW: conflicting capture timestamps in 360 bundle')
-        # Filename is a local clock cross-check, not a second UTC timestamp.
         for item in members:
             named = filename_date(item)
             if named and abs((named - value.replace(tzinfo=None)).total_seconds()) > 2:
                 raise ImportFailure('NEEDS REVIEW: capture metadata conflicts with filename clock')
-        return value, source
+        return value + shift, _shifted(source, shift)
+    naive = [naive_exif_date(i) for i in members]
+    if any(naive):
+        if not shift:
+            return None, 'metadata:naive:respected'
+        return next(n for n in naive if n) + shift, 'metadata:naive:shifted ' + describe_shift(shift)
+    offsets = {utc_clock_offset(i) for i in members} - {None}
+    if len(offsets) > 1:
+        raise ImportFailure('NEEDS REVIEW: members of one 360 bundle imply different UTC offsets')
     named = filename_date(members[0])
     if named is None:
-        raise ImportFailure('NEEDS REVIEW: no reliable video capture date')
-    return localize(named, zone), 'filename + configured timezone'
+        return None, 'no camera clock'
+    if offsets:
+        offset = offsets.pop()
+        return (named + shift).replace(tzinfo=timezone(offset)), _shifted('metadata:utc-vs-filename', shift)
+    if zone:
+        return localize(named + shift, zone), _shifted('filename + configured timezone', shift)
+    return None, 'no timezone evidence'
+
+
+def _shifted(source, shift):
+    return source + ('; camera clock shifted ' + describe_shift(shift) if shift else '')
 
 
 def zone_offset(zone, expected):
@@ -251,15 +292,18 @@ def exif_matches(item, info):
     expected = parse_date(item.capture_time)
     exif = info.get('exifInfo') or {}
     actual = parse_date(exif.get('dateTimeOriginal'))
-    zone = exif.get('timeZone')
-    if not actual or actual.tzinfo is None or not zone:
+    if not actual or actual.tzinfo is None:
         return False
-    return abs((actual - expected).total_seconds()) < 1 and zone_offset(zone, expected) == expected.utcoffset()
+    if expected.tzinfo is None:
+        # A bare wall-clock time: Immich stores it as UTC and keeps no timezone.
+        return abs((actual - expected.replace(tzinfo=timezone.utc)).total_seconds()) < 1
+    zone = exif.get('timeZone')
+    return bool(zone) and abs((actual - expected).total_seconds()) < 1 and zone_offset(zone, expected) == expected.utcoffset()
 
 
 def local_matches(item, info):
     """localDateTime (timeline day/hour): refreshed by Immich's metadata job after SidecarWrite."""
-    if not item.capture_time:
+    if not item.capture_time or parse_date(item.capture_time).tzinfo is None:
         return True
     expected = parse_date(item.capture_time)
     local = parse_date(info.get('localDateTime'))
@@ -276,8 +320,8 @@ def datable(item):
 
 
 def supplied_by_file(origin):
-    """True when the chosen date is the file's own reliable (zoned) metadata: Immich extracts it itself."""
-    return origin.startswith('metadata:')
+    """True when Immich extracts the same value itself (zoned metadata): nothing to deliver."""
+    return origin.startswith('metadata:zoned')
 
 
 def plan_dates(items, zone):

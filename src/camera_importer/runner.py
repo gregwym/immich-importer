@@ -79,7 +79,11 @@ def build_plan(source, config, log, progress=QUIET):
                             break
             value, origin = choose(members, config.capture_timezone, parse_shift(config.clock_shift))
             for item in members:
-                item.capture_time, item.capture_source = value.isoformat(), origin
+                item.capture_source = origin
+                if value is None:
+                    log(item.relative + ": capture date left to Immich (" + origin + ")")
+                    continue
+                item.capture_time = value.isoformat()
                 if not supplied_by_file(origin):
                     item.xmp = make_xmp(item.expected, item.xmp, item.capture_time)
                 log(item.relative + ": capture " + item.capture_time + " (" + origin + ")")
@@ -111,6 +115,7 @@ def summarize(plan, config, dry_run, metadata_verify, manifests=0, warnings=()):
             "result": ("DRY RUN OK" if dry_run else "SAFE TO REVIEW FOR CARD FORMAT") if success else "NOT SAFE TO FORMAT SOURCE",
             "exitCode": 0 if success else 1, "counts": routes,
             "hashSources": dict(Counter(i.hash_source for i in plan.items if i.hash_source)),
+            "captureSources": dict(Counter(i.capture_source.split(';')[0] for i in plan.items if i.capture_source)),
             "cameraMetadata": {"verified": sum(i.verified for i in plan.assets),
                                "failed": sum(i.status == "failed" for i in plan.assets),
                                "xmpPrepared": sum(i.xmp is not None for i in plan.assets)},

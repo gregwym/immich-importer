@@ -30,8 +30,7 @@ class CaptureTimeTest(unittest.TestCase):
         self.assertIn('metadata', source)
 
     def test_missing_zone_and_conflicts_fail(self):
-        with self.assertRaises(ImportFailure):
-            choose([self.item()], '')
+        self.assertEqual(choose([self.item()], ''), (None, 'no timezone evidence'))
         with self.assertRaises(ImportFailure):
             choose([self.item(tags={'CreationDate': '2026:09:09 02:17:00Z'})], '')
         with self.assertRaises(ImportFailure):
@@ -100,6 +99,33 @@ class CaptureTimeTest(unittest.TestCase):
                     self.assertEqual([o.utcoffset() for o in ours], [expected.utcoffset()], (zone, rule, naive))
                     checked += 1
         self.assertGreater(checked, 10000)
+
+    def photo(self, tags=None):
+        name = 'DJI_20260908182440_0001_D.JPG'
+        item = Item(Path(name), name, 'timeline', 'test')
+        item.time_tags = tags or {}
+        return item
+
+    def test_bare_exif_is_respected_and_only_a_shift_changes_it(self):
+        from datetime import timedelta
+        bare = {'DateTimeOriginal': '2026:09:08 18:24:40'}
+        self.assertEqual(choose([self.photo(bare)], 'America/Los_Angeles'), (None, 'metadata:naive:respected'))
+        value, source = choose([self.photo(bare)], 'America/Los_Angeles', timedelta(hours=1))
+        self.assertEqual((value.isoformat(), value.tzinfo), ('2026-09-08T19:24:40', None))
+        self.assertIn('naive:shifted', source)
+        # A photo without any EXIF date falls back to the filename clock.
+        value, source = choose([self.photo()], 'America/Los_Angeles')
+        self.assertEqual(value.isoformat(), '2026-09-08T18:24:40-07:00')
+
+    def test_utc_create_date_proves_the_offset_for_videos(self):
+        value, source = choose([self.item('00', {'CreateDate': '2026:09:09 01:24:40'})], '')
+        self.assertEqual((value.isoformat(), source), ('2026-09-08T18:24:40-07:00', 'metadata:utc-vs-filename'))
+        # Camera wrote local time into the UTC field: proves nothing, configured zone applies.
+        value, source = choose([self.item('00', {'CreateDate': '2026:09:08 18:24:40'})], 'Asia/Shanghai')
+        self.assertEqual((value.isoformat(), source), ('2026-09-08T18:24:40+08:00', 'filename + configured timezone'))
+        self.assertEqual(choose([self.item('00', {'CreateDate': '2026:09:08 18:24:40'})], ''), (None, 'no timezone evidence'))
+        with self.assertRaises(ImportFailure):
+            choose([self.item('00', {'CreateDate': '2026:09:09 01:24:40'}), self.item('10', {'CreateDate': '2026:09:09 02:24:40'})], '')
 
     def test_clock_shift_parsing_and_application(self):
         from datetime import timedelta

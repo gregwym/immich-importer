@@ -188,9 +188,13 @@ class FakeServer:
                         # then SidecarWrite -> AssetExtractMetadata refreshes localDateTime later.
                         from datetime import datetime as dt, timezone as tz
                         date = dt.fromisoformat(body["dateTimeOriginal"])
-                        offset = int(date.utcoffset().total_seconds() // 60)
-                        name = "UTC" + ("+" if offset >= 0 else "-") + str(abs(offset) // 60) + (":" + str(abs(offset) % 60).zfill(2) if abs(offset) % 60 else "")
-                        exif.update(dateTimeOriginal=date.astimezone(tz.utc).isoformat(), timeZone=name)
+                        if date.tzinfo is None:
+                            # No offset: stored as UTC, timeZone untouched (extractTimeZone -> undefined).
+                            exif.update(dateTimeOriginal=date.replace(tzinfo=tz.utc).isoformat())
+                        else:
+                            offset = int(date.utcoffset().total_seconds() // 60)
+                            name = "UTC" + ("+" if offset >= 0 else "-") + str(abs(offset) // 60) + (":" + str(abs(offset) % 60).zfill(2) if abs(offset) % 60 else "")
+                            exif.update(dateTimeOriginal=date.astimezone(tz.utc).isoformat(), timeZone=name)
                         camera = {k: exif.get(k) or "" for k in ("make", "model", "lensModel")}
                         asset["xmp"] = make_xmp(camera, asset["xmp"], body["dateTimeOriginal"])
                         if state.defer_jobs:
@@ -474,27 +478,45 @@ class FilesTest(Workspace):
         self.assertIsNotNone(photo.xmp)
         self.assertEqual(photo.expected, POCKET)
 
-    def test_photo_dates_follow_the_same_rule_as_videos(self):
+    def test_file_evidence_decides_dates_for_photos_and_videos(self):
         from camera_importer.runner import build_plan
         from camera_importer.capture_time import parse_date
         zoned = {"Make": "DJI", "Model": "PP-101", "FileType": "JPEG", "DateTimeOriginal": "2026:09:08 18:24:40", "OffsetTimeOriginal": "-07:00"}
         naive = {"Make": "DJI", "Model": "PP-101", "FileType": "JPEG", "DateTimeOriginal": "2026:09:08 18:24:40"}
-        self.put("DJI_20260908182440_0001_D.JPG")
-        self.put("DJI_20260908182440_0002_D.JPG")
-        self.put("DJI_20260908182440_0003_D.MP4")
-        tags = {"0001": zoned, "0002": naive, "0003": {"Make": "DJI", "Model": "DJI OsmoPocket3", "CreateDate": "2026:09:09 01:24:40"}}
-        with patch("camera_importer.runner.probe_batch", side_effect=lambda paths, exe: {p: tags[p.name[19:23]] for p in paths}):
+        utc_video = {"Make": "DJI", "Model": "DJI OsmoPocket3", "CreateDate": "2026:09:09 01:24:40"}
+        bare_video = {"Make": "DJI", "Model": "DJI OsmoPocket3"}
+        for suffix in ("0001_D.JPG", "0002_D.JPG", "0003_D.MP4", "0004_D.MP4"):
+            self.put("DJI_20260908182440_" + suffix)
+        tags = {"0001": zoned, "0002": naive, "0003": utc_video, "0004": bare_video}
+        probe = lambda paths, exe: {p: tags[p.name[19:23]] for p in paths}
+        with patch("camera_importer.runner.probe_batch", side_effect=probe):
+            plan = build_plan(self.source, Config(), lambda m: None)  # no timezone configured
+        by = {i.path.name[19:23]: i for i in plan.items}
+        self.assertTrue(all(i.error is None for i in plan.items), [i.error for i in plan.items])
+        # Zoned EXIF: known, nothing to deliver.
+        self.assertEqual(parse_date(by["0001"].capture_time).isoformat(), "2026-09-08T18:24:40-07:00")
+        self.assertIsNone(by["0001"].xmp)
+        # Bare EXIF: respected as written, never reinterpreted.
+        self.assertFalse(by["0002"].capture_time)
+        self.assertEqual(by["0002"].capture_source, "metadata:naive:respected")
+        self.assertIsNone(by["0002"].xmp)
+        # UTC CreateDate vs filename clock proves -07:00 without any configuration.
+        self.assertEqual(by["0003"].capture_time, "2026-09-08T18:24:40-07:00")
+        self.assertIn(b"DateTimeOriginal", by["0003"].xmp)
+        # Nothing states a timezone: left to Immich, not an error.
+        self.assertFalse(by["0004"].capture_time)
+        self.assertEqual(by["0004"].capture_source, "no timezone evidence")
+        with patch("camera_importer.runner.probe_batch", side_effect=probe):
             plan = build_plan(self.source, Config(capture_timezone="America/Los_Angeles"), lambda m: None)
-        by_name = {i.path.name[19:23]: i for i in plan.items}
-        for key in ("0001", "0002", "0003"):
-            self.assertEqual(parse_date(by_name[key].capture_time).isoformat(), "2026-09-08T18:24:40-07:00", key)
-        self.assertTrue(by_name["0001"].capture_source.startswith("metadata:"))
-        self.assertIsNone(by_name["0001"].xmp)  # reliable EXIF: Immich extracts it, nothing to deliver
-        self.assertIn(b"DateTimeOriginal", by_name["0002"].xmp)  # naive EXIF: delivered like a video
-        self.assertIn(b"DateTimeOriginal", by_name["0003"].xmp)
-        with patch("camera_importer.runner.probe_batch", side_effect=lambda paths, exe: {p: tags[p.name[19:23]] for p in paths}):
-            plan = build_plan(self.source, Config(), lambda m: None)
-        self.assertEqual([i.error is None for i in sorted(plan.items, key=lambda i: i.path.name)], [True, False, False])
+        by = {i.path.name[19:23]: i for i in plan.items}
+        self.assertFalse(by["0002"].capture_time)  # a configured zone never overrides EXIF
+        self.assertEqual(by["0004"].capture_time, "2026-09-08T18:24:40-07:00")
+        with patch("camera_importer.runner.probe_batch", side_effect=probe):
+            plan = build_plan(self.source, Config(clock_shift="1h"), lambda m: None)
+        by = {i.path.name[19:23]: i for i in plan.items}
+        self.assertEqual(by["0002"].capture_time, "2026-09-08T19:24:40")  # shifted, still bare
+        self.assertIn(b"19:24:40", by["0002"].xmp)
+        self.assertEqual(by["0001"].capture_time, "2026-09-08T19:24:40-07:00")
 
     def test_raw_and_rendered_pairs_form_stacks(self):
         for name in ["DJI_20251226080057_0003_D.JPG", "DJI_20251226080057_0003_D.DNG", "IMG_20250518_101759_00_001.jpg",
@@ -727,12 +749,14 @@ class IntegrationTest(Workspace):
         self.assertEqual(len(self.server.uploads), 1)
         self.assertTrue(any("capture date/time/timezone" in error for error in result["errors"]))
 
-    def test_missing_capture_timezone_blocks_video_upload(self):
+    def test_missing_capture_timezone_leaves_date_to_immich(self):
         self.put("DJI_20251226075842_0001_D.MP4")
         self.config.capture_timezone = ""
         result = self.run_import()
-        self.assertEqual(result["exitCode"], 1)
-        self.assertFalse(self.server.uploads)
+        self.assertEqual(result["exitCode"], 0, result["errors"])
+        self.assertEqual(len(self.server.uploads), 1)
+        self.assertEqual(result["captureSources"], {"no timezone evidence": 1})
+        self.assertNotIn(b"DateTimeOriginal", self.server.uploads[0]["sidecarData"][1])
 
     def test_existing_missing_xmp_is_not_reuploaded(self):
         self.put("DJI_20251226075842_0001_D.MP4")

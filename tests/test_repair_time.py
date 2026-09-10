@@ -176,11 +176,28 @@ class RepairTest(Workspace):
         self.assertEqual(report['exitCode'], 1)
         self.assertFalse(self.server.date_updates)
 
-    def test_missing_timezone_blocks_apply(self):
+    def test_missing_timezone_leaves_assets_alone(self):
         self.seed()
         self.config.capture_timezone = ''
-        self.assertEqual(repair(self.source, self.config, True, 'filename')['exitCode'], 1)
+        report = repair(self.source, self.config, True, 'filename')
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['status'] for r in report['items']], ['no_timezone_evidence'] * 3)
         self.assertFalse(self.server.date_updates)
+
+    def test_bare_exif_photo_is_respected_unless_clock_shifted(self):
+        self.seed(['DJI_20260908182440_0001_D.JPG'])
+        bare = {'Make': 'DJI', 'Model': 'PP-101', 'DateTimeOriginal': '2026:09:08 18:24:40'}
+        with patch('camera_importer.repair_time.probe_batch', side_effect=lambda paths, exe: {p: bare for p in paths}):
+            report = repair(self.source, self.config, True)
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['status'] for r in report['items']], ['exif_respected'])
+        self.assertFalse(self.server.date_updates)
+        self.config.clock_shift = '1h'
+        with patch('camera_importer.repair_time.probe_batch', side_effect=lambda paths, exe: {p: bare for p in paths}):
+            report = repair(self.source, self.config, True)
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['status'] for r in report['items']], ['updated'])
+        self.assertEqual(self.server.date_updates, [{'dateTimeOriginal': '2026-09-08T19:24:40'}])
 
     def test_audit_failure_prevents_mutation(self):
         self.seed()

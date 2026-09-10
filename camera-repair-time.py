@@ -1176,7 +1176,11 @@ SOURCES = [('__init__',
   "    return datetime.strptime(''.join(match.groups()), '%Y%m%d%H%M%S') if match else None\n"
   '\n'
   '\n'
+  "PHOTO_SUFFIXES = ('.jpg', '.jpeg', '.dng', '.insp')\n"
+  '\n'
+  '\n'
   'def explicit_date(tags):\n'
+  '    """A date the file states together with its timezone."""\n'
   "    for key in ('SubSecDateTimeOriginal', 'DateTimeOriginal', 'CreationDate'):\n"
   '        value = parse_date(tags.get(key))\n'
   '        if value:\n'
@@ -1184,7 +1188,38 @@ SOURCES = [('__init__',
   "tags.get('OffsetTimeOriginal'):\n"
   "                value = localize(value, str(tags['OffsetTimeOriginal']))\n"
   '            if value.tzinfo is not None:\n'
-  "                return value, 'metadata:' + key\n"
+  "                return value, 'metadata:zoned:' + key\n"
+  '    return None\n'
+  '\n'
+  '\n'
+  'def naive_exif_date(item):\n'
+  '    """EXIF DateTimeOriginal without an offset (EXIF < 2.31 or camera omits it)."""\n'
+  '    if item.path.suffix.lower() not in PHOTO_SUFFIXES:\n'
+  '        return None\n'
+  "    for key in ('SubSecDateTimeOriginal', 'DateTimeOriginal'):\n"
+  '        value = parse_date(item.time_tags.get(key))\n'
+  '        if value and value.tzinfo is None:\n'
+  '            return value\n'
+  '    return None\n'
+  '\n'
+  '\n'
+  'def utc_clock_offset(item):\n'
+  '    """Offset the file proves itself: QuickTime CreateDate is UTC, the filename is the local '
+  'clock.\n'
+  '\n'
+  '    Returns a timedelta when the difference is a plausible timezone offset\n'
+  '    (multiple of 15 minutes, within +-14h, not zero: a zero difference means the\n'
+  '    camera wrote local time into the UTC field and proves nothing).\n'
+  '    """\n'
+  '    named = filename_date(item)\n'
+  "    for key in ('CreateDate', 'MediaCreateDate', 'TrackCreateDate'):\n"
+  '        stamp = parse_date(item.time_tags.get(key))\n'
+  '        if named is None or stamp is None or stamp.tzinfo is not None:\n'
+  '            continue\n'
+  '        delta = named - stamp\n'
+  '        seconds = round(delta.total_seconds())\n'
+  '        if seconds and seconds % 900 == 0 and abs(seconds) <= 14 * 3600:\n'
+  '            return timedelta(seconds=seconds)\n'
   '    return None\n'
   '\n'
   '\n'
@@ -1221,45 +1256,56 @@ SOURCES = [('__init__',
   '\n'
   '\n'
   'def choose(members, zone, shift=None):\n'
-  '    """Capture instant for one file or 360 bundle.\n'
+  '    """Capture instant for one file or 360 bundle: (datetime or None, source).\n'
   '\n'
-  "    `shift` corrects a wrong camera clock: it is applied to the camera's own\n"
-  '    clock (metadata or filename) before any timezone interpretation, so it\n'
-  '    affects both sources equally and the filename cross-check still holds.\n'
+  '    What the file states is authoritative, in this order: a zoned date; a bare\n'
+  '    EXIF date (respected as written, so None: nothing to deliver); a UTC\n'
+  '    QuickTime clock whose difference from the filename clock proves the offset;\n'
+  '    the filename clock interpreted in the configured timezone. A file that\n'
+  '    states nothing about its timezone and has no configured one is left to\n'
+  '    Immich (None). `shift` corrects a wrong camera clock and is the only way a\n'
+  '    stated wall-clock time is ever changed.\n'
   '    """\n'
-  '    value, source = _choose(members, zone)\n'
-  '    if shift:\n'
-  "        if source.startswith('metadata:'):\n"
-  '            value = value + shift\n'
-  '        else:\n'
-  '            value = localize(filename_date(members[0]) + shift, zone)\n'
-  "        source += '; camera clock shifted ' + describe_shift(shift)\n"
-  '    return value, source\n'
-  '\n'
-  '\n'
-  'def _choose(members, zone):\n'
-  '    dates = []\n'
-  '    for item in members:\n'
-  '        selected = explicit_date(item.time_tags)\n'
-  '        if selected:\n'
-  '            dates.append(selected)\n'
+  '    shift = shift or timedelta(0)\n'
+  '    dates = [explicit_date(i.time_tags) for i in members]\n'
+  '    dates = [d for d in dates if d]\n'
   '    if dates:\n'
   '        value, source = dates[0]\n'
   '        if any(abs((other - value).total_seconds()) > 1 or other.utcoffset() != '
   'value.utcoffset()\n'
   '               for other, _ in dates[1:]):\n'
   "            raise ImportFailure('NEEDS REVIEW: conflicting capture timestamps in 360 bundle')\n"
-  '        # Filename is a local clock cross-check, not a second UTC timestamp.\n'
   '        for item in members:\n'
   '            named = filename_date(item)\n'
   '            if named and abs((named - value.replace(tzinfo=None)).total_seconds()) > 2:\n'
   "                raise ImportFailure('NEEDS REVIEW: capture metadata conflicts with filename "
   "clock')\n"
-  '        return value, source\n'
+  '        return value + shift, _shifted(source, shift)\n'
+  '    naive = [naive_exif_date(i) for i in members]\n'
+  '    if any(naive):\n'
+  '        if not shift:\n'
+  "            return None, 'metadata:naive:respected'\n"
+  "        return next(n for n in naive if n) + shift, 'metadata:naive:shifted ' + "
+  'describe_shift(shift)\n'
+  '    offsets = {utc_clock_offset(i) for i in members} - {None}\n'
+  '    if len(offsets) > 1:\n'
+  "        raise ImportFailure('NEEDS REVIEW: members of one 360 bundle imply different UTC "
+  "offsets')\n"
   '    named = filename_date(members[0])\n'
   '    if named is None:\n'
-  "        raise ImportFailure('NEEDS REVIEW: no reliable video capture date')\n"
-  "    return localize(named, zone), 'filename + configured timezone'\n"
+  "        return None, 'no camera clock'\n"
+  '    if offsets:\n'
+  '        offset = offsets.pop()\n'
+  '        return (named + shift).replace(tzinfo=timezone(offset)), '
+  "_shifted('metadata:utc-vs-filename', shift)\n"
+  '    if zone:\n'
+  "        return localize(named + shift, zone), _shifted('filename + configured timezone', "
+  'shift)\n'
+  "    return None, 'no timezone evidence'\n"
+  '\n'
+  '\n'
+  'def _shifted(source, shift):\n'
+  "    return source + ('; camera clock shifted ' + describe_shift(shift) if shift else '')\n"
   '\n'
   '\n'
   'def zone_offset(zone, expected):\n'
@@ -1284,17 +1330,20 @@ SOURCES = [('__init__',
   '    expected = parse_date(item.capture_time)\n'
   "    exif = info.get('exifInfo') or {}\n"
   "    actual = parse_date(exif.get('dateTimeOriginal'))\n"
-  "    zone = exif.get('timeZone')\n"
-  '    if not actual or actual.tzinfo is None or not zone:\n'
+  '    if not actual or actual.tzinfo is None:\n'
   '        return False\n'
-  '    return abs((actual - expected).total_seconds()) < 1 and zone_offset(zone, expected) == '
-  'expected.utcoffset()\n'
+  '    if expected.tzinfo is None:\n'
+  '        # A bare wall-clock time: Immich stores it as UTC and keeps no timezone.\n'
+  '        return abs((actual - expected.replace(tzinfo=timezone.utc)).total_seconds()) < 1\n'
+  "    zone = exif.get('timeZone')\n"
+  '    return bool(zone) and abs((actual - expected).total_seconds()) < 1 and zone_offset(zone, '
+  'expected) == expected.utcoffset()\n'
   '\n'
   '\n'
   'def local_matches(item, info):\n'
   '    """localDateTime (timeline day/hour): refreshed by Immich\'s metadata job after '
   'SidecarWrite."""\n'
-  '    if not item.capture_time:\n'
+  '    if not item.capture_time or parse_date(item.capture_time).tzinfo is None:\n'
   '        return True\n'
   '    expected = parse_date(item.capture_time)\n'
   "    local = parse_date(info.get('localDateTime'))\n"
@@ -1312,9 +1361,9 @@ SOURCES = [('__init__',
   '\n'
   '\n'
   'def supplied_by_file(origin):\n'
-  '    """True when the chosen date is the file\'s own reliable (zoned) metadata: Immich extracts '
-  'it itself."""\n'
-  "    return origin.startswith('metadata:')\n"
+  '    """True when Immich extracts the same value itself (zoned metadata): nothing to '
+  'deliver."""\n'
+  "    return origin.startswith('metadata:zoned')\n"
   '\n'
   '\n'
   'def plan_dates(items, zone):\n'
@@ -2377,7 +2426,11 @@ SOURCES = [('__init__',
   '            value, origin = choose(members, config.capture_timezone, '
   'parse_shift(config.clock_shift))\n'
   '            for item in members:\n'
-  '                item.capture_time, item.capture_source = value.isoformat(), origin\n'
+  '                item.capture_source = origin\n'
+  '                if value is None:\n'
+  '                    log(item.relative + ": capture date left to Immich (" + origin + ")")\n'
+  '                    continue\n'
+  '                item.capture_time = value.isoformat()\n'
   '                if not supplied_by_file(origin):\n'
   '                    item.xmp = make_xmp(item.expected, item.xmp, item.capture_time)\n'
   '                log(item.relative + ": capture " + item.capture_time + " (" + origin + ")")\n'
@@ -2411,6 +2464,8 @@ SOURCES = [('__init__',
   'success else "NOT SAFE TO FORMAT SOURCE",\n'
   '            "exitCode": 0 if success else 1, "counts": routes,\n'
   '            "hashSources": dict(Counter(i.hash_source for i in plan.items if i.hash_source)),\n'
+  '            "captureSources": dict(Counter(i.capture_source.split(\';\')[0] for i in plan.items '
+  'if i.capture_source)),\n'
   '            "cameraMetadata": {"verified": sum(i.verified for i in plan.assets),\n'
   '                               "failed": sum(i.status == "failed" for i in plan.assets),\n'
   '                               "xmpPrepared": sum(i.xmp is not None for i in plan.assets)},\n'
@@ -2784,6 +2839,8 @@ SOURCES = [('__init__',
   'counts.items()) or "0"))\n'
   '        print("\\nCamera metadata: " + json.dumps(report["cameraMetadata"]))\n'
   '        print("Hash sources: " + json.dumps(report.get("hashSources", {})))\n'
+  '        print("Capture date sources: " + json.dumps(report.get("captureSources", {}), '
+  'ensure_ascii=False))\n'
   '        print("360 bundles: complete=" + str(report["bundles"]["complete"]) +\n'
   '              ", lrvMissing=" + str(len(report["bundles"]["lrvMissing"])) +\n'
   '              ", incomplete=" + str(len(report["bundles"]["incomplete"])))\n'
@@ -2988,8 +3045,15 @@ SOURCES = [('__init__',
   "                raise ImportFailure('Bundle member cannot be reviewed')\n"
   '            value, origin = choose([i for i, _ in members], config.capture_timezone, shift)\n'
   '            for item, row in members:\n'
+  "                row['timeSource'] = origin\n"
+  '                if value is None:\n'
+  "                    # The file's own date stands (bare EXIF), or nothing states a timezone: not "
+  'ours to change.\n'
+  "                    row['status'] = 'exif_respected' if 'respected' in origin else "
+  "'no_timezone_evidence'\n"
+  '                    continue\n'
   '                item.capture_time = value.isoformat()\n'
-  '                row.update(target=item.capture_time, timeSource=origin)\n'
+  "                row['target'] = item.capture_time\n"
   '        except (ImportFailure, OSError, ValueError) as error:\n'
   '            for _, row in members:\n'
   "                row.update(status='failed', error=str(error))\n"
@@ -3006,7 +3070,7 @@ SOURCES = [('__init__',
   '    with locked(config.manifest_root):\n'
   '        index = hashcache.load(config.manifest_root)\n'
   '        for item, row in pairs:\n'
-  "            if row['status'] == 'failed':\n"
+  "            if row['status'] != 'planned':\n"
   '                continue\n'
   '            try:\n'
   "                cached = hashcache.lookup(index, item) if match == 'auto' else None\n"
@@ -3032,7 +3096,7 @@ SOURCES = [('__init__',
   '            hashcache.save(config.manifest_root, index, now)\n'
   '        except (OSError, ImportFailure):\n'
   "            report['errors'].append('Failed to persist hash index')\n"
-  "    eligible = [(i, r) for i, r in pairs if r['status'] != 'failed']\n"
+  "    eligible = [(i, r) for i, r in pairs if r['status'] == 'planned']\n"
   '    matches = api.check([i for i, _ in eligible if not i.asset_id])\n'
   '    seen = {}\n'
   '    for item, row in eligible:\n'

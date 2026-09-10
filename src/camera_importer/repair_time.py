@@ -121,8 +121,13 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
                 raise ImportFailure('Bundle member cannot be reviewed')
             value, origin = choose([i for i, _ in members], config.capture_timezone, shift)
             for item, row in members:
+                row['timeSource'] = origin
+                if value is None:
+                    # The file's own date stands (bare EXIF), or nothing states a timezone: not ours to change.
+                    row['status'] = 'exif_respected' if 'respected' in origin else 'no_timezone_evidence'
+                    continue
                 item.capture_time = value.isoformat()
-                row.update(target=item.capture_time, timeSource=origin)
+                row['target'] = item.capture_time
         except (ImportFailure, OSError, ValueError) as error:
             for _, row in members:
                 row.update(status='failed', error=str(error))
@@ -139,7 +144,7 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
     with locked(config.manifest_root):
         index = hashcache.load(config.manifest_root)
         for item, row in pairs:
-            if row['status'] == 'failed':
+            if row['status'] != 'planned':
                 continue
             try:
                 cached = hashcache.lookup(index, item) if match == 'auto' else None
@@ -163,7 +168,7 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
             hashcache.save(config.manifest_root, index, now)
         except (OSError, ImportFailure):
             report['errors'].append('Failed to persist hash index')
-    eligible = [(i, r) for i, r in pairs if r['status'] != 'failed']
+    eligible = [(i, r) for i, r in pairs if r['status'] == 'planned']
     matches = api.check([i for i, _ in eligible if not i.asset_id])
     seen = {}
     for item, row in eligible:

@@ -233,12 +233,17 @@ MP4 / INSV 使用可靠且带偏移的 `DateTimeOriginal` / `CreationDate`（也
 QuickTime 整数 `CreateDate` / `MediaCreateDate` 的 UTC 语义不能仅凭字段名保证，因此只记录用于诊断，
 不直接当作带时区的拍摄日期。文件系统 mtime / ctime 不用作视频拍摄时间回退。
 
-**照片和视频同一条规则，导入和修复同一份实现。** 只要文件自带可靠的拍摄时间（`DateTimeOriginal` / `SubSecDateTimeOriginal` 配 `OffsetTimeOriginal`，或带时区的 `CreationDate`），
-导入时不写日期到 XMP，由 Immich 自行提取；否则用文件名钟点 + 配置时区，导入时通过 XMP 的 `exif:DateTimeOriginal` 交给 Immich，修复时通过 `PUT` 写入。
-没有 `OffsetTimeOriginal` 的照片 EXIF 与视频一样被视为「不可靠」，因为 Immich 会把无时区的时刻当作 UTC。
-照片的日期 XMP 只补日期，相机字段照抄文件自带值，不改写。
+**文件写下的时间是权威的，导入和修复同一份实现（`capture_time.choose`）。** 按证据强弱依次判断：
 
-文件名只有相机钟点，缺少时区时需明确配置拍摄时区，例如：
+1. 带时区的日期（`DateTimeOriginal` / `SubSecDateTimeOriginal` 配 `OffsetTimeOriginal`，或带时区的 `CreationDate`）：直接采用，导入时不写日期 XMP，由 Immich 自行提取。
+2. 不带时区的 EXIF `DateTimeOriginal`（EXIF 2.31 之前的照片，如 Pocket 3、ONE RS 的 JPG / DNG / INSP）：**原样尊重，不做任何解释**，配置的时区对它无效；修复工具显示 `exif_respected`。Immich 会把它当 UTC 存，墙上时间正确。
+3. 视频的 QuickTime `CreateDate` 是 UTC，与文件名里的本地钟点之差是文件自己证明的时区（15 分钟整数倍、±14 小时内、非零）：按此偏移写入，不需要任何配置。DJI 视频属于这种情况。
+4. 只剩文件名钟点时（相机把本地时间写进了 UTC 字段，或视频没有 `CreateDate`）：用配置的拍摄时区解释；没配置就留给 Immich，不报错，报告 `captureSources` 里计为 `no timezone evidence`，修复工具显示 `no_timezone_evidence`。
+
+**唯一会改动文件所写钟点的是显式的 `--clock-shift`**（相机时钟设错）：它加在相机钟点上，对以上四种情况一律生效；不带时区的 EXIF 移位后仍不带时区。
+`--time-source filename` 是另一种显式覆盖：无视 metadata 里的钟点，只按文件名 + 配置时区处理。
+
+属于第 4 种情况的视频需要配置拍摄时区，例如：
 
 ```sh
 camera-import --capture-timezone America/Los_Angeles --dry-run /some/folder
@@ -248,8 +253,7 @@ camera-import --capture-timezone America/Los_Angeles /some/folder
 不需要每次在命令行指定：把常驻拍摄地写进 config JSON 的 `capture_timezone`（或环境变量 `CAMERA_CAPTURE_TIMEZONE`），
 `camera-import` 和 `camera-repair-time` 都会读取；只有在别处拍摄的目录才需要用 `--capture-timezone` 覆盖。
 优先级仍是命令行 > 环境变量 > config。带时区 metadata 的文件不受此影响，配置值只用于文件名钟点。
-默认不猜时区；这意味着缺少带时区 metadata 的视频在未配置时区时会报 NEEDS REVIEW，不上传。
-Pocket 3 和 ONE RS 的视频都只写本地钟点，没有时区字段，所以实际上总会用到这个配置。
+默认不猜时区；没有配置时这类视频原样交给 Immich（当 UTC 显示），不阻止上传。配置只补文件自身没有的信息，从不覆盖 EXIF。
 IANA 时区依据**拍摄日期**处理夏令时。DSM 既没有 `/usr/share/zoneinfo` 数据库，其 Python 3.8 也没有编译 `time.tzset`，
 因此夏令时计算完全用纯 Python 的 POSIX TZ 规则求值器完成，不依赖 libc 和 pip。规则来源依次为：系统 zoneinfo 文件的 footer
 （存在时，`TZDIR` 可指定目录）、脚本内置的约 500 个 IANA 时区当前规则表（取自 tzdata 的 TZif footer）、或直接给出的
