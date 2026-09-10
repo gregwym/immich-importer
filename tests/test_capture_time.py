@@ -101,6 +101,26 @@ class CaptureTimeTest(unittest.TestCase):
                     checked += 1
         self.assertGreater(checked, 10000)
 
+    def test_clock_shift_parsing_and_application(self):
+        from datetime import timedelta
+        from camera_importer.capture_time import parse_shift, describe_shift
+        self.assertEqual(parse_shift('221d00:34:12'), timedelta(days=221, minutes=34, seconds=12))
+        self.assertEqual(parse_shift('-1h30m'), -timedelta(hours=1, minutes=30))
+        self.assertEqual(parse_shift('P221DT34M12S'), timedelta(days=221, minutes=34, seconds=12))
+        self.assertEqual(parse_shift('45s'), timedelta(seconds=45))
+        self.assertIsNone(parse_shift(''))
+        self.assertEqual(describe_shift(timedelta(days=221, minutes=34, seconds=12)), '+221d00:34:12')
+        with self.assertRaises(ImportFailure):
+            parse_shift('yesterday')
+        shift = timedelta(days=221, minutes=34, seconds=12)
+        # Filename clock: shifted before the timezone is applied (DST differs between Jan and Sep).
+        value, source = choose([self.item('00'), self.item('10')], 'America/Los_Angeles', shift)
+        self.assertEqual(value.isoformat(), '2027-04-17T18:58:52-07:00')
+        self.assertIn('clock shifted +221d00:34:12', source)
+        # Zoned metadata: same camera clock, same shift.
+        value, _ = choose([self.item('10', {'CreationDate': '2026:09:08 18:24:40-07:00'})], '', shift)
+        self.assertEqual(value.isoformat(), '2027-04-17T18:58:52-07:00')
+
     def test_verifies_instant_wall_clock_and_offset(self):
         item = self.item()
         item.capture_time = '2026-09-08T18:24:40-07:00'

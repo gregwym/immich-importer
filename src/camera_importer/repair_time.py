@@ -1,16 +1,17 @@
 """Repair existing video dates via Immich's supported date-edit/sidecar workflow."""
 import argparse
 import base64
+import fnmatch
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from . import __version__, hashcache
 from .api import Immich
-from .capture_time import TIME_TAGS, choose, datable, exif_matches
+from .capture_time import TIME_TAGS, choose, datable, describe_shift, exif_matches, filename_date, parse_date, parse_shift
 from .config import authenticate, load_config
 from .files import atomic_json, changed, hashes, locked, validate_roots
 from .metadata import probe, probe_batch
@@ -27,6 +28,11 @@ def parser():
     p.add_argument('--time-source', choices=('auto', 'filename'), default='auto',
                    help='auto: reliable zoned metadata then filename; filename: explicitly disregard embedded dates')
     p.add_argument('--capture-timezone', help='Shooting timezone for filename dates, e.g. America/Los_Angeles')
+    p.add_argument('--clock-shift', help='Camera clock was wrong by this amount: 221d00:34:12, -1h30m, P221DT34M12S')
+    p.add_argument('--clock-anchor', metavar='FILE=YYYY-MM-DDTHH:MM:SS',
+                   help='Derive the clock shift: this file really started/ended at this local wall time (see --anchor-at)')
+    p.add_argument('--anchor-at', choices=('end', 'start'), default='end', help='Whether --clock-anchor gives the end (default) or start time')
+    p.add_argument('--only', metavar='GLOB', help='Limit to file names matching this pattern, e.g. "VID_202601*"')
     p.add_argument('--match', choices=('auto', 'checksum'), default='auto',
                    help='auto: hash index, then a unique Immich asset with the same file name and size, then hashing; checksum: always hash')
     p.add_argument('--config')
@@ -75,7 +81,26 @@ def find_by_name(api, item):
     return asset, checksum
 
 
-def repair(source, config, apply=False, time_source='auto', log=lambda s: None, match='auto'):
+def anchor_shift(media, anchor, anchor_at, executable):
+    """Clock shift from one file whose true local start/end time is known."""
+    name, _, when = anchor.partition('=')
+    actual = parse_date(when.strip())
+    if not name or actual is None or actual.tzinfo is not None:
+        raise ImportFailure('--clock-anchor expects FILE=YYYY-MM-DDTHH:MM:SS (local wall time, no offset)')
+    item = next((i for i in media if i.path.name.casefold() == Path(name.strip()).name.casefold()), None)
+    if item is None:
+        raise ImportFailure('--clock-anchor file is not among the scanned camera files: ' + name)
+    camera = filename_date(item)
+    if anchor_at == 'end':
+        duration = probe(item.path, executable).get('Duration')
+        if not isinstance(duration, (int, float)) or duration <= 0:
+            raise ImportFailure('Cannot read the duration of the anchor file; use --anchor-at start or --clock-shift')
+        camera = camera + timedelta(seconds=float(duration))
+    return actual - camera
+
+
+def repair(source, config, apply=False, time_source='auto', log=lambda s: None, match='auto',
+           clock_anchor=None, anchor_at='end', only=None):
     validate_roots(source, config.companion_root, config.manifest_root)
     plan = scan(source)
     report = {'source': str(source), 'apply': apply, 'timeSource': time_source, 'match': match,
@@ -83,10 +108,18 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
               'xmpPersistence': 'Immich queues SidecarWrite after date edits; no independent completion receipt'}
     report['errors'].extend('UNKNOWN FILE: ' + i.relative for i in plan.unknown)
     # Same selection and date rule as the importer (capture_time.datable / choose).
-    media = [i for i in plan.items if datable(i)]
+    media = [i for i in plan.items if datable(i) and (not only or fnmatch.fnmatch(i.path.name, only))]
     if not media:
-        report['errors'].append('No recognized camera photos or videos in source')
+        report['errors'].append('No recognized camera photos or videos in source' + (' matching ' + only if only else ''))
     report['warnings'] = []
+    shift = parse_shift(config.clock_shift)
+    if clock_anchor:
+        if shift:
+            raise ImportFailure('Use either --clock-shift or --clock-anchor, not both')
+        shift = anchor_shift(media, clock_anchor, anchor_at, config.exiftool_bin)
+    report['clockShift'] = describe_shift(shift) if shift else None
+    if shift:
+        log('Camera clock shift: ' + report['clockShift'])
     groups = {}
     tags_by_path = probe_batch([i.path for i in media], config.exiftool_bin) if time_source == 'auto' and media else {}
     for item in media:
@@ -109,7 +142,7 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
         try:
             if any(row['status'] == 'failed' for _, row in members):
                 raise ImportFailure('Bundle member cannot be reviewed')
-            value, origin = choose([i for i, _ in members], config.capture_timezone)
+            value, origin = choose([i for i, _ in members], config.capture_timezone, shift)
             for item, row in members:
                 item.capture_time = value.isoformat()
                 row.update(target=item.capture_time, timeSource=origin)
@@ -237,7 +270,7 @@ def main(argv=None):
         source = Path(args.path).expanduser().resolve(strict=True)
         if not source.is_dir():
             raise ImportFailure('Source must be a directory')
-        report = repair(source, config, args.apply, args.time_source, log, args.match)
+        report = repair(source, config, args.apply, args.time_source, log, args.match, args.clock_anchor, args.anchor_at, args.only)
     except (ImportFailure, OSError, ValueError) as error:
         report = {'result': 'REPAIR INCOMPLETE', 'exitCode': 1, 'errors': [str(error)], 'items': []}
     except KeyboardInterrupt:

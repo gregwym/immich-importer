@@ -19,7 +19,7 @@ for prefix, uri in NS.items():
 
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".dng", ".insp")
 TAGS = ["-Make", "-Model", "-LensID", "-LensType", "-LensSpec", "-LensModel", "-Lens", "-FileType",
-        "-NumberOfImages", "-ProjectionType", "-Error", "-Warning"] + ["-" + tag for tag in TIME_TAGS]
+        "-NumberOfImages", "-ProjectionType", "-Duration#", "-Error", "-Warning"] + ["-" + tag for tag in TIME_TAGS]
 BATCH = 50
 
 

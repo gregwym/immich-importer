@@ -160,7 +160,54 @@ def explicit_date(tags):
     return None
 
 
-def choose(members, zone):
+SHIFT = re.compile(r'^([+-])?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$')
+SHIFT_CLOCK = re.compile(r'^([+-])?(?:(\d+)d)?(\d{1,3}):(\d{2})(?::(\d{2}))?$')
+SHIFT_ISO = re.compile(r'^([+-])?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$')
+
+
+def parse_shift(text):
+    """Camera clock correction: 221d00:34:12, -1h30m, 45s, P221DT34M12S. None when empty."""
+    if text is None or not str(text).strip():
+        return None
+    text = str(text).strip()
+    for pattern in (SHIFT_CLOCK, SHIFT, SHIFT_ISO):
+        match = pattern.match(text)
+        if match and any(g for g in match.groups()[1:]):
+            sign = -1 if match.group(1) == '-' else 1
+            parts = [int(g or 0) for g in match.groups()[1:]]
+            if pattern is SHIFT_CLOCK:
+                days, hours, minutes, seconds = parts[0], parts[1], parts[2], parts[3]
+            else:
+                days, hours, minutes, seconds = parts
+            return sign * timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+    raise ImportFailure('Invalid clock shift: ' + text + ' (use e.g. 221d00:34:12, -1h30m or P221DT34M12S)')
+
+
+def describe_shift(shift):
+    sign = '-' if shift < timedelta(0) else '+'
+    total = int(abs(shift).total_seconds())
+    days, rest = divmod(total, 86400)
+    return sign + str(days) + 'd' + '%02d:%02d:%02d' % (rest // 3600, rest % 3600 // 60, rest % 60)
+
+
+def choose(members, zone, shift=None):
+    """Capture instant for one file or 360 bundle.
+
+    `shift` corrects a wrong camera clock: it is applied to the camera's own
+    clock (metadata or filename) before any timezone interpretation, so it
+    affects both sources equally and the filename cross-check still holds.
+    """
+    value, source = _choose(members, zone)
+    if shift:
+        if source.startswith('metadata:'):
+            value = value + shift
+        else:
+            value = localize(filename_date(members[0]) + shift, zone)
+        source += '; camera clock shifted ' + describe_shift(shift)
+    return value, source
+
+
+def _choose(members, zone):
     dates = []
     for item in members:
         selected = explicit_date(item.time_tags)

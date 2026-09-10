@@ -25,6 +25,7 @@ def parser():
     p.add_argument("--manifest-root")
     p.add_argument("--api-url")
     p.add_argument("--capture-timezone", help="Fallback shooting timezone: America/Los_Angeles or +08:00")
+    p.add_argument("--clock-shift", help="Correct a wrong camera clock for this run, e.g. 221d00:34:12 or -1h30m")
     p.add_argument("--auth-dir", help="Directory containing Immich CLI auth.yml")
     p.add_argument("--verify-timeout", type=float, help="Metadata polling timeout per asset in seconds")
     return p

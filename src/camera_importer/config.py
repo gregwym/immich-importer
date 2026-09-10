@@ -21,6 +21,7 @@ class Config:
     expected_user_name: str = "Camera Archive"
     expected_user_id: str = ""
     capture_timezone: str = ""
+    clock_shift: str = ""  # Per-run camera clock correction; command line only.
     verify_timeout: float = 180.0
     poll_interval: float = 2.0
     request_timeout: float = 300.0
@@ -69,7 +70,7 @@ def load_config(args):
     for key, field in env.items():
         if key in os.environ:
             values[field] = os.environ[key]
-    for key in ("companion_root", "manifest_root", "api_url", "auth_dir", "verify_timeout", "capture_timezone"):
+    for key in ("companion_root", "manifest_root", "api_url", "auth_dir", "verify_timeout", "capture_timezone", "clock_shift"):
         value = getattr(args, key, None)
         if value is not None:
             values[key] = value

@@ -10,7 +10,7 @@ from .api import Immich
 from .config import authenticate, describe
 from .files import archive_wav, atomic_json, changed, hashes, locked, validate_roots
 from .metadata import BATCH, prepare_metadata, probe_batch, probe, make_xmp
-from .capture_time import choose, datable, parse_date, supplied_by_file
+from .capture_time import choose, datable, parse_date, parse_shift, supplied_by_file
 from .model import ImportFailure
 from .scan import scan
 
@@ -77,7 +77,7 @@ def build_plan(source, config, log, progress=QUIET):
                                 raise ImportFailure("NEEDS REVIEW: source sidecar date lacks explicit timezone")
                             item.time_tags = {"DateTimeOriginal": side[key]}
                             break
-            value, origin = choose(members, config.capture_timezone)
+            value, origin = choose(members, config.capture_timezone, parse_shift(config.clock_shift))
             for item in members:
                 item.capture_time, item.capture_source = value.isoformat(), origin
                 if not supplied_by_file(origin):

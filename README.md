@@ -170,6 +170,19 @@ PUT 成功即为修复完成（状态 `updated`，响应里带回的字段会顺
 如果 Storage Template 含日期，文件还会被移到新日期的目录。所以在 Immich 库目录上运行后，源文件很快会不在原处；
 工具在 apply 后不再复查源文件。重跑时已修好的 asset 显示 `already_correct`。
 
+**相机时钟设错了：** 用 `--clock-shift` 或 `--clock-anchor` 给整批文件加同一个修正量，修正作用在相机自己的钟点上（文件名或 metadata），
+然后再按拍摄时区解释，所以跨夏令时也正确。已知某个文件真实的结束（或开始）时间时最方便，工具用 ExifTool 读该文件时长反推：
+
+```sh
+# LRV_20260127_170758_11_053.insv 实际在 2026-09-05 17:54:00（当地时间）拍完
+camera-repair-time --clock-anchor "LRV_20260127_170758_11_053.insv=2026-09-05T17:54:00" --only "*_2026012*" /volume1/immich/media/library/camera/2026/2026-01-27
+camera-repair-time --apply --clock-anchor "LRV_20260127_170758_11_053.insv=2026-09-05T17:54:00" --only "*_2026012*" /volume1/immich/media/library/camera/2026/2026-01-27
+camera-repair-time --clock-shift 221d00:46:02 --only "VID_202601*" /some/folder      # 直接给修正量：221d00:46:02、-1h30m、P221DT46M2S
+```
+
+`--anchor-at start` 表示给的是开始时间。`--only GLOB` 只处理匹配的文件名，避免碰到同一目录里日期本来就对的文件。报告里 `clockShift` 记录修正量，每个文件的 `timeSource` 也会注明。
+`camera-import --clock-shift …` 对导入同样有效（仅本次运行，不写入 config）。
+
 asset 匹配顺序（`--match auto`）：1）hash 索引命中（同一文件之前处理过）；2）Immich 里 originalFileName、字节大小、类型都相同且唯一的 asset，
 用 `POST /search/metadata` 查找，不读文件。这是对 Immich 库目录（`/volume1/immich/media/library/...`）做修复时的常态，
 因为对 Immich 自己保存的文件再算 hash 只是拿 Immich 的副本和它自己比较；3）以上都不成立（没找到或同名同大小不唯一）时读文件算 hash，
