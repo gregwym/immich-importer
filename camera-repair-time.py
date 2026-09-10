@@ -1224,6 +1224,20 @@ SOURCES = [('__init__',
   '    return None\n'
   '\n'
   '\n'
+  'def from_utc(utc, zone):\n'
+  '    """Zoned local datetime of a UTC instant in an IANA zone, POSIX rule or fixed offset."""\n'
+  "    if zone in ('UTC', 'Z') or re.fullmatch(r'[+-]\\d{2}:\\d{2}', zone):\n"
+  '        return utc.astimezone(localize(datetime(2000, 1, 1), zone).tzinfo)\n'
+  '    rule = posix_rule(zone)\n'
+  '    if rule is None:\n'
+  "        raise ImportFailure('Unknown capture timezone: ' + zone)\n"
+  '    parsed = PosixZone(rule)\n'
+  '    naive = utc.replace(tzinfo=None)\n'
+  '    offset = parsed.dst if parsed.dst is not None and parsed.is_dst(naive) else parsed.std\n'
+  '    return (naive + '
+  'timedelta(seconds=offset)).replace(tzinfo=timezone(timedelta(seconds=offset)))\n'
+  '\n'
+  '\n'
   'def standard_offset(zone):\n'
   '    """The zone\'s standard (non-DST) offset, or None for fixed offsets and unknown zones."""\n'
   "    rule = posix_rule(zone) if zone and not re.fullmatch(r'[+-]\\d{2}:\\d{2}', zone) and zone "
@@ -1314,10 +1328,13 @@ SOURCES = [('__init__',
   '                configured = None\n'
   '            if configured is not None and configured.utcoffset() != offset:\n'
   '                if offset == standard_offset(zone):\n'
-  '                    # Camera derives "UTC" from a fixed standard-time offset and ignores\n'
-  '                    # DST: the wall clock is right, its UTC is an hour off. Trust the zone.\n'
-  "                    return configured, _shifted('filename + configured timezone (file UTC "
-  "offset ignores DST)', shift)\n"
+  '                    # The camera was synced before DST began and never moved its\n'
+  '                    # displayed clock: its UTC stayed correct, the filename clock lags\n'
+  "                    # an hour. Trust the file's UTC and express it in the configured zone.\n"
+  '                    utc = (named + '
+  'shift).replace(tzinfo=timezone(offset)).astimezone(timezone.utc)\n'
+  "                    return from_utc(utc, zone), _shifted('metadata:utc + configured timezone "
+  "(camera clock not adjusted for DST)', shift)\n"
   '                # A genuinely different offset: the file was shot elsewhere; the file wins.\n'
   '                return (named + shift).replace(tzinfo=timezone(offset)), '
   "_shifted('metadata:utc-vs-filename (differs from configured timezone)', shift)\n"

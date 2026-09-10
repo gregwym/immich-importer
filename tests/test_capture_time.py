@@ -127,10 +127,13 @@ class CaptureTimeTest(unittest.TestCase):
         # One second of jitter between the two clocks still proves -08:00.
         self.assertEqual(utc_clock_offset(video('2024:03:16 02:14:19')), timedelta(hours=-8))
         self.assertIsNone(utc_clock_offset(video('2024:03:16 02:19:19')))  # 5 minutes off: no evidence
-        # 15 March 2024 is PDT, but the Pocket 3's "UTC" uses fixed PST: the configured zone wins.
+        # 15 March 2024 is PDT but the camera still shows PST: its UTC (02:14:19Z) is the truth,
+        # so the real local time is 19:14:18 PDT, an hour after the filename clock.
         value, source = choose([video('2024:03:16 02:14:19')], 'America/Los_Angeles')
-        self.assertEqual(value.isoformat(), '2024-03-15T18:14:18-07:00')
-        self.assertIn('ignores DST', source)
+        self.assertEqual(value.isoformat(), '2024-03-15T19:14:18-07:00')
+        self.assertIn('not adjusted for DST', source)
+        value, _ = choose([video('2024:03:16 02:14:19')], '-07:00')
+        self.assertEqual(value.isoformat(), '2024-03-15T18:14:18-08:00')  # fixed offset: no standard/DST notion
         # Same file without a configured zone: the file's own offset is all there is.
         value, source = choose([video('2024:03:16 02:14:19')], '')
         self.assertEqual((value.isoformat(), source), ('2024-03-15T18:14:18-08:00', 'metadata:utc-vs-filename'))
