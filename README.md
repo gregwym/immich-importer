@@ -161,8 +161,8 @@ camera-repair-time --apply --time-source filename --capture-timezone America/Los
 camera-repair-time --match checksum /path/to/originals   # 强制按 checksum 匹配
 ```
 
-处理对象是文件名带相机钟点的照片和视频（`DJI_…`、`VID_`/`LRV_`、`IMG_`，含 `PRO_` 变体），JPG / DNG / INSP 与 MP4 / INSV 一视同仁；
-Immich 对没有时区字段的照片 EXIF 同样会记错时刻。
+处理对象是文件名带相机钟点的照片和视频（`DJI_…`、`VID_`/`LRV_`、`IMG_`，含 `PRO_` 变体），JPG / DNG / INSP 与 MP4 / INSV 一视同仁。
+选日期的规则与导入完全相同（同一个 `capture_time.choose`）：文件自带可靠的、带时区的拍摄时间就用它，否则文件名钟点 + 配置时区。
 
 `--apply` 对每个 asset 发一次 `PUT /assets/{id}`，Immich **同步**写入并锁定 `dateTimeOriginal` 和 `timeZone`，
 PUT 成功即为修复完成（状态 `updated`，响应里带回的字段会顺带核对，不做额外轮询）。
@@ -218,6 +218,11 @@ MP4 / INSV 使用可靠且带偏移的 `DateTimeOriginal` / `CreationDate`（也
 `DateTimeOriginal` + `OffsetTimeOriginal`）；没有可靠带时区日期时，使用已识别的相机文件名时间。
 QuickTime 整数 `CreateDate` / `MediaCreateDate` 的 UTC 语义不能仅凭字段名保证，因此只记录用于诊断，
 不直接当作带时区的拍摄日期。文件系统 mtime / ctime 不用作视频拍摄时间回退。
+
+**照片和视频同一条规则，导入和修复同一份实现。** 只要文件自带可靠的拍摄时间（`DateTimeOriginal` / `SubSecDateTimeOriginal` 配 `OffsetTimeOriginal`，或带时区的 `CreationDate`），
+导入时不写日期到 XMP，由 Immich 自行提取；否则用文件名钟点 + 配置时区，导入时通过 XMP 的 `exif:DateTimeOriginal` 交给 Immich，修复时通过 `PUT` 写入。
+没有 `OffsetTimeOriginal` 的照片 EXIF 与视频一样被视为「不可靠」，因为 Immich 会把无时区的时刻当作 UTC。
+照片的日期 XMP 只补日期，相机字段照抄文件自带值，不改写。
 
 文件名只有相机钟点，缺少时区时需明确配置拍摄时区，例如：
 

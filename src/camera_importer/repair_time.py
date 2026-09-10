@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from . import __version__, hashcache
 from .api import Immich
-from .capture_time import TIME_TAGS, choose, exif_matches, filename_date
+from .capture_time import TIME_TAGS, choose, datable, exif_matches
 from .config import authenticate, load_config
 from .files import atomic_json, changed, hashes, locked, validate_roots
 from .metadata import probe, probe_batch
@@ -82,8 +82,8 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
               'captureTimezone': config.capture_timezone, 'items': [], 'errors': list(plan.errors),
               'xmpPersistence': 'Immich queues SidecarWrite after date edits; no independent completion receipt'}
     report['errors'].extend('UNKNOWN FILE: ' + i.relative for i in plan.unknown)
-    # Camera photos and videos with a clock in their name (DJI_, VID_/LRV_, IMG_).
-    media = [i for i in plan.items if i.route in ('timeline', 'probe') and filename_date(i) is not None]
+    # Same selection and date rule as the importer (capture_time.datable / choose).
+    media = [i for i in plan.items if datable(i)]
     if not media:
         report['errors'].append('No recognized camera photos or videos in source')
     report['warnings'] = []

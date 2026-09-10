@@ -221,3 +221,25 @@ def local_matches(item, info):
 
 def time_matches(item, info):
     return exif_matches(item, info) and local_matches(item, info)
+
+
+def datable(item):
+    """Camera photo or video whose name carries the camera clock."""
+    return item.route in ('timeline', 'probe') and filename_date(item) is not None
+
+
+def supplied_by_file(origin):
+    """True when the chosen date is the file's own reliable (zoned) metadata: Immich extracts it itself."""
+    return origin.startswith('metadata:')
+
+
+def plan_dates(items, zone):
+    """One shared decision for import and repair, photos and videos alike.
+
+    Members of a 360 bundle share one date. Returns {item: (datetime, origin)}
+    and raises per group; the caller records failures for the whole group.
+    """
+    groups = {}
+    for item in items:
+        groups.setdefault(item.bundle or item.relative, []).append(item)
+    return [(members, choose(members, zone)) for members in groups.values()]

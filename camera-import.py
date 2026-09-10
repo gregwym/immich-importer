@@ -1254,7 +1254,30 @@ SOURCES = [('__init__',
   '\n'
   '\n'
   'def time_matches(item, info):\n'
-  '    return exif_matches(item, info) and local_matches(item, info)\n'),
+  '    return exif_matches(item, info) and local_matches(item, info)\n'
+  '\n'
+  '\n'
+  'def datable(item):\n'
+  '    """Camera photo or video whose name carries the camera clock."""\n'
+  "    return item.route in ('timeline', 'probe') and filename_date(item) is not None\n"
+  '\n'
+  '\n'
+  'def supplied_by_file(origin):\n'
+  '    """True when the chosen date is the file\'s own reliable (zoned) metadata: Immich extracts '
+  'it itself."""\n'
+  "    return origin.startswith('metadata:')\n"
+  '\n'
+  '\n'
+  'def plan_dates(items, zone):\n'
+  '    """One shared decision for import and repair, photos and videos alike.\n'
+  '\n'
+  '    Members of a 360 bundle share one date. Returns {item: (datetime, origin)}\n'
+  '    and raises per group; the caller records failures for the whole group.\n'
+  '    """\n'
+  '    groups = {}\n'
+  '    for item in items:\n'
+  '        groups.setdefault(item.bundle or item.relative, []).append(item)\n'
+  '    return [(members, choose(members, zone)) for members in groups.values()]\n'),
  ('metadata',
   '"""Read with ExifTool; merge camera properties into an in-memory XMP document."""\n'
   'import json\n'
@@ -2211,7 +2234,7 @@ SOURCES = [('__init__',
   'from .config import authenticate, describe\n'
   'from .files import archive_wav, atomic_json, changed, hashes, locked, validate_roots\n'
   'from .metadata import BATCH, prepare_metadata, probe_batch, probe, make_xmp\n'
-  'from .capture_time import choose, parse_date\n'
+  'from .capture_time import choose, datable, parse_date, supplied_by_file\n'
   'from .model import ImportFailure\n'
   'from .scan import scan\n'
   '\n'
@@ -2259,10 +2282,13 @@ SOURCES = [('__init__',
   '                fail(item, error)\n'
   '                if item.route == "probe":\n'
   '                    item.route, item.reason = "unknown", "Photo metadata requires review"\n'
-  '    videos = [i for i in targets if i.path.suffix.lower() in (".mp4", ".insv")]\n'
+  '    # Photos and videos alike: a reliable zoned date in the file is left for\n'
+  '    # Immich to extract; otherwise the filename clock + configured timezone is\n'
+  '    # delivered in the sidecar. The same rule drives camera-repair-time.\n'
   '    groups = {}\n'
-  '    for item in videos:\n'
-  '        groups.setdefault(item.bundle or item.relative, []).append(item)\n'
+  '    for item in targets:\n'
+  '        if datable(item):\n'
+  '            groups.setdefault(item.bundle or item.relative, []).append(item)\n'
   '    for members in groups.values():\n'
   '        try:\n'
   '            if any(i.error for i in members):\n'
@@ -2284,7 +2310,8 @@ SOURCES = [('__init__',
   '            value, origin = choose(members, config.capture_timezone)\n'
   '            for item in members:\n'
   '                item.capture_time, item.capture_source = value.isoformat(), origin\n'
-  '                item.xmp = make_xmp(item.expected, item.xmp, item.capture_time)\n'
+  '                if not supplied_by_file(origin):\n'
+  '                    item.xmp = make_xmp(item.expected, item.xmp, item.capture_time)\n'
   '                log(item.relative + ": capture " + item.capture_time + " (" + origin + ")")\n'
   '        except (ImportFailure, OSError, ValueError) as error:\n'
   '            for item in members:\n'
@@ -2761,7 +2788,7 @@ SOURCES = [('__init__',
   '\n'
   'from . import __version__, hashcache\n'
   'from .api import Immich\n'
-  'from .capture_time import TIME_TAGS, choose, exif_matches, filename_date\n'
+  'from .capture_time import TIME_TAGS, choose, datable, exif_matches\n'
   'from .config import authenticate, load_config\n'
   'from .files import atomic_json, changed, hashes, locked, validate_roots\n'
   'from .metadata import probe, probe_batch\n'
@@ -2845,9 +2872,8 @@ SOURCES = [('__init__',
   "              'xmpPersistence': 'Immich queues SidecarWrite after date edits; no independent "
   "completion receipt'}\n"
   "    report['errors'].extend('UNKNOWN FILE: ' + i.relative for i in plan.unknown)\n"
-  '    # Camera photos and videos with a clock in their name (DJI_, VID_/LRV_, IMG_).\n'
-  "    media = [i for i in plan.items if i.route in ('timeline', 'probe') and filename_date(i) is "
-  'not None]\n'
+  '    # Same selection and date rule as the importer (capture_time.datable / choose).\n'
+  '    media = [i for i in plan.items if datable(i)]\n'
   '    if not media:\n'
   "        report['errors'].append('No recognized camera photos or videos in source')\n"
   "    report['warnings'] = []\n"

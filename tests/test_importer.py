@@ -474,6 +474,28 @@ class FilesTest(Workspace):
         self.assertIsNotNone(photo.xmp)
         self.assertEqual(photo.expected, POCKET)
 
+    def test_photo_dates_follow_the_same_rule_as_videos(self):
+        from camera_importer.runner import build_plan
+        from camera_importer.capture_time import parse_date
+        zoned = {"Make": "DJI", "Model": "PP-101", "FileType": "JPEG", "DateTimeOriginal": "2026:09:08 18:24:40", "OffsetTimeOriginal": "-07:00"}
+        naive = {"Make": "DJI", "Model": "PP-101", "FileType": "JPEG", "DateTimeOriginal": "2026:09:08 18:24:40"}
+        self.put("DJI_20260908182440_0001_D.JPG")
+        self.put("DJI_20260908182440_0002_D.JPG")
+        self.put("DJI_20260908182440_0003_D.MP4")
+        tags = {"0001": zoned, "0002": naive, "0003": {"Make": "DJI", "Model": "DJI OsmoPocket3", "CreateDate": "2026:09:09 01:24:40"}}
+        with patch("camera_importer.runner.probe_batch", side_effect=lambda paths, exe: {p: tags[p.name[19:23]] for p in paths}):
+            plan = build_plan(self.source, Config(capture_timezone="America/Los_Angeles"), lambda m: None)
+        by_name = {i.path.name[19:23]: i for i in plan.items}
+        for key in ("0001", "0002", "0003"):
+            self.assertEqual(parse_date(by_name[key].capture_time).isoformat(), "2026-09-08T18:24:40-07:00", key)
+        self.assertTrue(by_name["0001"].capture_source.startswith("metadata:"))
+        self.assertIsNone(by_name["0001"].xmp)  # reliable EXIF: Immich extracts it, nothing to deliver
+        self.assertIn(b"DateTimeOriginal", by_name["0002"].xmp)  # naive EXIF: delivered like a video
+        self.assertIn(b"DateTimeOriginal", by_name["0003"].xmp)
+        with patch("camera_importer.runner.probe_batch", side_effect=lambda paths, exe: {p: tags[p.name[19:23]] for p in paths}):
+            plan = build_plan(self.source, Config(), lambda m: None)
+        self.assertEqual([i.error is None for i in sorted(plan.items, key=lambda i: i.path.name)], [True, False, False])
+
     def test_raw_and_rendered_pairs_form_stacks(self):
         for name in ["DJI_20251226080057_0003_D.JPG", "DJI_20251226080057_0003_D.DNG", "IMG_20250518_101759_00_001.jpg",
                      "IMG_20250518_101759_00_001.dng", "DJI_20251226080058_0004_D.DNG", "other/IMG_20250518_101759_00_001.dng"]:
@@ -785,7 +807,7 @@ class IntegrationTest(Workspace):
         os.unlink(self.source / "DJI_20251226075842_0001_D.MP4")
         self.put("DJI_20251226080057_0003_D.JPG")
         with patch("camera_importer.runner.probe_batch", side_effect=lambda paths, exe: {p: {"Make": "DJI", "Model": "PP-101", "FileType": "JPEG"} for p in paths}):
-            self.server.on_upload = lambda: [a["info"].__setitem__("exifInfo", {"make": "DJI", "model": "PP-101"}) for a in self.server.assets.values()]
+            self.server.on_upload = lambda: [a["info"]["exifInfo"].update({"make": "DJI", "model": "PP-101"}) for a in self.server.assets.values()]
             report = self.run_import()
         self.assertEqual(report["exitCode"], 0, report["errors"])
         self.assertEqual(report["warnings"], [])
