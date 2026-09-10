@@ -1,37 +1,115 @@
 """Explicit video capture dates. Never infer capture time from host TZ or mtime."""
 import os
 import re
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .model import ImportFailure
 from .tzrules import RULES
 
+TIME_TAGS = ('DateTimeOriginal', 'SubSecDateTimeOriginal', 'CreationDate',
+             'OffsetTimeOriginal', 'CreateDate', 'MediaCreateDate', 'TrackCreateDate')
 ZONEINFO_ROOTS = ('/usr/share/zoneinfo', '/usr/share/zoneinfo.default', '/usr/lib/zoneinfo', '/usr/share/lib/zoneinfo')
-POSIX_RULE = re.compile(r'^(?:<[+-]?\d+>|[A-Za-z]{3,})[+-]?\d{1,2}(?::\d{2}(?::\d{2})?)?(?:(?:<[+-]?\d+>|[A-Za-z]{3,})(?:[+-]?\d{1,2}(?::\d{2}(?::\d{2})?)?)?(?:,[JM]?[\d./-]+(?:/[+-]?\d{1,3}(?::\d{2}(?::\d{2})?)?)?){2})?$')
+NAME = r'(?:<[A-Za-z0-9+-]+>|[A-Za-z]{3,})'
+OFFSET = r'[+-]?\d{1,3}(?::\d{1,2}(?::\d{1,2})?)?'
+DATE = r'(?:J\d{1,3}|\d{1,3}|M\d{1,2}\.\d\.\d)'
+POSIX_RULE = re.compile('^(' + NAME + ')(' + OFFSET + ')(?:(' + NAME + ')(' + OFFSET + ')?,(' + DATE + ')(?:/(' + OFFSET + '))?,('
+                        + DATE + ')(?:/(' + OFFSET + '))?)?$')
 
 
-def libc_zone(zone):
-    """TZ value libc can apply for an IANA name or POSIX rule; None if unknown.
+def tzif_footer(path):
+    """Current POSIX rule stored at the end of a TZif v2+ file, or None."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    if not data.startswith(b'TZif') or not data.endswith(b'\n'):
+        return None
+    footer = data.rstrip(b'\n').rsplit(b'\n', 1)[-1]
+    return footer.decode('ascii', 'replace') if footer and not footer.startswith(b'TZif') else None
 
-    A system zoneinfo file carries full history; DSM ships none, so the bundled
-    current-rule table (tzdata footers) or an explicit POSIX rule is used instead.
+
+def posix_rule(zone):
+    """POSIX TZ rule for an IANA name or an explicit rule; None if unknown.
+
+    Pure Python: DSM ships neither a zoneinfo database nor a Python built with
+    time.tzset. A system TZif file's footer is preferred (newest tzdata), then
+    the bundled table, then a rule given directly.
     """
     if re.fullmatch(r'[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)+', zone):
         roots = ([os.environ['TZDIR']] if os.environ.get('TZDIR') else []) + list(ZONEINFO_ROOTS)
         for root in roots:
             if (Path(root) / zone).is_file():
-                return ':' + str(Path(root) / zone)
-        if zone in RULES:
-            return RULES[zone]
-        return None
-    if POSIX_RULE.match(zone):
-        return zone
-    return None
+                footer = tzif_footer(Path(root) / zone)
+                if footer and POSIX_RULE.match(footer):
+                    return footer
+        return RULES.get(zone)
+    return zone if POSIX_RULE.match(zone) else None
 
-TIME_TAGS = ('DateTimeOriginal', 'SubSecDateTimeOriginal', 'CreationDate',
-             'OffsetTimeOriginal', 'CreateDate', 'MediaCreateDate', 'TrackCreateDate')
+
+def _seconds(text, default=0):
+    if text is None:
+        return default
+    sign = -1 if text.startswith('-') else 1
+    parts = [int(x) for x in text.lstrip('+-').split(':')]
+    return sign * (parts[0] * 3600 + (parts[1] if len(parts) > 1 else 0) * 60 + (parts[2] if len(parts) > 2 else 0))
+
+
+def _rule_date(spec, year):
+    """Calendar date of a POSIX transition spec (Jn, n or Mm.w.d) in a year."""
+    if spec.startswith('M'):
+        month, week, weekday = (int(x) for x in spec[1:].split('.'))
+        first = datetime(year, month, 1)
+        # POSIX weekday 0 = Sunday; Python Monday = 0.
+        day = 1 + (weekday - (first.weekday() + 1) % 7) % 7 + (week - 1) * 7
+        days_in_month = (datetime(year + (month == 12), month % 12 + 1, 1) - first).days
+        while day > days_in_month:
+            day -= 7
+        return datetime(year, month, day)
+    if spec.startswith('J'):
+        day = int(spec[1:])
+        leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        return datetime(year, 1, 1) + timedelta(days=day - 1 + (1 if leap and day >= 60 else 0))
+    return datetime(year, 1, 1) + timedelta(days=int(spec))
+
+
+class PosixZone:
+    """Offsets of a POSIX TZ rule, computed without libc or tzdata."""
+    def __init__(self, rule):
+        match = POSIX_RULE.match(rule)
+        if not match:
+            raise ImportFailure('Invalid POSIX timezone rule: ' + rule)
+        std_name, std, dst_name, dst, start, start_time, end, end_time = match.groups()
+        # POSIX offsets are west-positive; store seconds east of UTC.
+        self.std = -_seconds(std)
+        self.dst = (-_seconds(dst) if dst else self.std + 3600) if dst_name else None
+        self.start, self.start_time = start, _seconds(start_time, 7200)
+        self.end, self.end_time = end, _seconds(end_time, 7200)
+
+    def transitions(self, year):
+        # Start is given in standard local time, end in daylight local time.
+        start = _rule_date(self.start, year) + timedelta(seconds=self.start_time - self.std)
+        end = _rule_date(self.end, year) + timedelta(seconds=self.end_time - self.dst)
+        return start, end
+
+    def is_dst(self, utc):
+        if self.dst is None:
+            return False
+        year = (utc + timedelta(seconds=self.std)).year
+        start, end = self.transitions(year)
+        if start < end:
+            return start <= utc < end
+        return not (end <= utc < start)
+
+    def localize(self, naive):
+        """Zoned datetimes for a wall-clock time; two if ambiguous, none if skipped."""
+        offsets = [self.std] if self.dst is None or self.dst == self.std else [self.std, self.dst]
+        found = []
+        for offset in offsets:
+            utc = naive - timedelta(seconds=offset)
+            if self.is_dst(utc) == (offset == self.dst and len(offsets) > 1):
+                found.append(naive.replace(tzinfo=timezone(timedelta(seconds=offset))))
+        return found
 
 
 def parse_date(value):
@@ -56,36 +134,14 @@ def localize(value, zone):
                 raise ImportFailure('Invalid capture timezone offset')
             offset = (hours * 60 + minutes) * (1 if zone[0] == '+' else -1)
         return value.replace(tzinfo=timezone(timedelta(minutes=offset)))
-    # Python 3.8 has no zoneinfo; libc does the conversion from a zoneinfo file,
-    # the bundled POSIX rule for the zone, or a POSIX rule given directly.
-    # This importer is single-threaded; restore TZ even on conversion failure.
-    tz = libc_zone(zone)
-    if tz is None:
+    rule = posix_rule(zone)
+    if rule is None:
         raise ImportFailure('Unknown capture timezone: ' + zone + ' (use an IANA name such as America/Los_Angeles, '
                             'a POSIX rule such as PST8PDT,M3.2.0,M11.1.0, or a fixed offset such as -07:00)')
-    if not hasattr(time, 'tzset'):
-        raise ImportFailure('Timezone conversion needs a POSIX libc; supply a fixed offset such as -07:00')
-    previous = os.environ.get('TZ')
-    candidates = {}
-    try:
-        os.environ['TZ'] = tz
-        time.tzset()
-        for dst in (-1, 0, 1):
-            stamp = time.mktime(value.timetuple()[:8] + (dst,))
-            wall = datetime.fromtimestamp(stamp)
-            if wall == value.replace(microsecond=0):
-                utc = datetime.fromtimestamp(stamp, timezone.utc).replace(tzinfo=None)
-                delta = wall - utc
-                candidates[stamp] = value.replace(tzinfo=timezone(delta))
-    finally:
-        if previous is None:
-            os.environ.pop('TZ', None)
-        else:
-            os.environ['TZ'] = previous
-        time.tzset()
+    candidates = PosixZone(rule).localize(value.replace(microsecond=0))
     if len(candidates) != 1:
         raise ImportFailure('NEEDS REVIEW: ambiguous/nonexistent DST capture time; supply explicit UTC offset')
-    return next(iter(candidates.values()))
+    return value.replace(tzinfo=candidates[0].tzinfo)
 
 
 def filename_date(item):

@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from camera_importer.capture_time import choose, localize, time_matches
 from camera_importer.model import Item, ImportFailure
@@ -47,18 +47,59 @@ class CaptureTimeTest(unittest.TestCase):
         self.assertEqual(os.environ.get('TZ'), previous)
         self.assertEqual(localize(datetime(2026, 11, 1, 1, 30), '-07:00').isoformat(), '2026-11-01T01:30:00-07:00')
 
-    def test_zone_without_system_zoneinfo_uses_bundled_rules(self):
+    def test_zone_without_system_zoneinfo_or_tzset_uses_bundled_rules(self):
         from camera_importer import capture_time
-        with patch.object(capture_time, 'ZONEINFO_ROOTS', ('/nonexistent-zoneinfo',)), patch.dict(os.environ, {'TZDIR': '/nonexistent-tzdir'}):
-            self.assertEqual(capture_time.libc_zone('America/Los_Angeles'), 'PST8PDT,M3.2.0,M11.1.0')
+        import time as time_module
+        with patch.object(capture_time, 'ZONEINFO_ROOTS', ('/nonexistent-zoneinfo',)), \
+                patch.dict(os.environ, {'TZDIR': '/nonexistent-tzdir'}), patch.object(time_module, 'tzset', None, create=True):
+            self.assertEqual(capture_time.posix_rule('America/Los_Angeles'), 'PST8PDT,M3.2.0,M11.1.0')
             self.assertEqual(localize(datetime(2026, 9, 8, 18, 24, 40), 'America/Los_Angeles').isoformat(), '2026-09-08T18:24:40-07:00')
             self.assertEqual(localize(datetime(2026, 1, 8, 18), 'Asia/Shanghai').isoformat(), '2026-01-08T18:00:00+08:00')
             self.assertEqual(localize(datetime(2026, 1, 8, 18), 'PST8PDT,M3.2.0,M11.1.0').isoformat(), '2026-01-08T18:00:00-08:00')
+            self.assertEqual(localize(datetime(2026, 1, 8, 18), 'Australia/Sydney').isoformat(), '2026-01-08T18:00:00+11:00')
+            self.assertEqual(localize(datetime(2026, 7, 8, 18), 'Australia/Sydney').isoformat(), '2026-07-08T18:00:00+10:00')
+            self.assertEqual(localize(datetime(2026, 7, 8, 18), 'Europe/London').isoformat(), '2026-07-08T18:00:00+01:00')
             with self.assertRaisesRegex(ImportFailure, 'Unknown capture timezone'):
                 localize(datetime(2026, 1, 8, 18), 'Mars/Olympus_Mons')
+            for date in (datetime(2026, 11, 1, 1, 30), datetime(2026, 3, 8, 2, 30)):
+                with self.assertRaises(ImportFailure):
+                    localize(date, 'America/Los_Angeles')
             with self.assertRaises(ImportFailure):
-                localize(datetime(2026, 11, 1, 1, 30), 'America/Los_Angeles')
-        self.assertIsNone(capture_time.libc_zone('rm -rf /'))
+                localize(datetime(2026, 4, 5, 2, 30), 'Australia/Sydney')  # repeated hour
+        self.assertIsNone(capture_time.posix_rule('rm -rf /'))
+
+    def test_posix_rules_agree_with_zoneinfo_for_every_bundled_zone(self):
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            self.skipTest('zoneinfo unavailable')
+        from camera_importer.capture_time import PosixZone
+        from camera_importer.tzrules import RULES
+        checked = 0
+        # Morocco keeps explicit Ramadan transitions in the TZif body through 2087;
+        # its footer ("permanent +01") is what a rule-only host can know.
+        irregular = {'Africa/Casablanca', 'Africa/El_Aaiun'}
+        for zone, rule in RULES.items():
+            if zone in irregular:
+                continue
+            try:
+                reference = ZoneInfo(zone)
+            except Exception:
+                continue
+            evaluator = PosixZone(rule)
+            for month in range(1, 13):
+                for day, hour in ((1, 12), (15, 3), (28, 23)):
+                    naive = datetime(2026, month, day, hour, 17)
+                    expected = naive.replace(tzinfo=reference)
+                    ours = evaluator.localize(naive)
+                    if expected.utcoffset() != naive.replace(tzinfo=reference, fold=1).utcoffset():
+                        # PEP 495: fold offsets differ for both repeated and skipped wall times.
+                        gap = expected.astimezone(timezone.utc).astimezone(reference).replace(tzinfo=None) != naive
+                        self.assertEqual(len(ours), 0 if gap else 2, (zone, rule, naive))
+                        continue
+                    self.assertEqual([o.utcoffset() for o in ours], [expected.utcoffset()], (zone, rule, naive))
+                    checked += 1
+        self.assertGreater(checked, 10000)
 
     def test_verifies_instant_wall_clock_and_offset(self):
         item = self.item()
