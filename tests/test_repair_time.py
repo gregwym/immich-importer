@@ -88,6 +88,19 @@ class RepairTest(Workspace):
         self.assertEqual(report['exitCode'], 0, report['errors'])
         self.assertEqual([r['hashSource'] for r in report['items']], ['read'] * 3)
 
+    def test_library_copy_with_lowercased_extension_still_matches_by_name(self):
+        import shutil
+        self.seed(['DJI_20260908182440_0001_D.MP4'])
+        library = self.root / 'library' / '2026' / '2026-09-08'
+        library.mkdir(parents=True)
+        # Immich's storage template stores DJI_x.MP4 as DJI_x.mp4; originalFileName keeps .MP4.
+        shutil.copyfile(self.source / 'DJI_20260908182440_0001_D.MP4', library / 'DJI_20260908182440_0001_D.mp4')
+        with patch('camera_importer.repair_time.hashes', side_effect=AssertionError('no hashing expected')):
+            report = repair(library, self.config, time_source='filename')
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['hashSource'] for r in report['items']], ['name+size'])
+        self.assertEqual(report['items'][0]['assetId'], next(iter(self.server.assets)))
+
     def test_missing_asset_aborts_all_changes(self):
         self.seed()
         self.put('DJI_20260908182440_0001_D.MP4')
