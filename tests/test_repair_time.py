@@ -81,9 +81,11 @@ class RepairTest(Workspace):
         self.server.assets[duplicate['id']] = {'info': duplicate, 'xmp': None, 'media': b''}
         report = repair(library, self.config, time_source='filename')
         self.assertEqual(report['exitCode'], 0, report['errors'])
-        self.assertEqual(sorted(r['hashSource'] for r in report['items']), ['index', 'index', 'read'])
+        self.assertEqual([r['hashSource'] for r in report['items']], ['read', 'name+size', 'name+size'])
+        # Forced checksum matching always hashes, index and name search unused.
         report = repair(library, self.config, time_source='filename', match='checksum')
-        self.assertEqual([r['hashSource'] for r in report['items']], ['index'] * 3)
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['hashSource'] for r in report['items']], ['read'] * 3)
 
     def test_missing_asset_aborts_all_changes(self):
         self.seed()
