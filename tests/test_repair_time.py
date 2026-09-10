@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 from unittest.mock import patch
 from test_importer import Workspace, FakeServer, TRIO
 from camera_importer.config import Config
@@ -105,10 +106,40 @@ class RepairTest(Workspace):
 
     def test_no_false_success_when_server_dates_do_not_change(self):
         self.seed()
-        self.server.ignore_sidecar = True
+        self.server.ignore_date_updates = True
         report = repair(self.source, self.config, True, 'filename')
         self.assertEqual(report['exitCode'], 1)
-        self.assertTrue(any('timed out' in e for e in report['errors']))
+        self.assertTrue(any('did not store' in e for e in report['errors']))
+
+    def test_slow_metadata_job_is_a_pending_warning_not_a_per_asset_wait(self):
+        self.seed()
+        self.server.defer_jobs = True
+        self.config.verify_timeout = 0.5  # a per-asset wait would take three times this
+        started = time.monotonic()
+        report = repair(self.source, self.config, True, 'filename')
+        self.assertLess(time.monotonic() - started, 1.2)
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['status'] for r in report['items']], ['dates_set_local_time_pending'] * 3)
+        self.assertTrue(report['result'].startswith('DATES SET; TIMELINE REFRESH PENDING'))
+        self.assertEqual(len(report['warnings']), 1)
+        self.assertEqual(len(self.server.date_updates), 3)
+        # Preview sees the edit already applied and only the refresh outstanding.
+        report = repair(self.source, self.config, time_source='filename')
+        self.assertEqual([r['status'] for r in report['items']], ['refresh_pending'] * 3)
+        self.server.run_jobs()
+        report = repair(self.source, self.config, True, 'filename')
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['status'] for r in report['items']], ['already_correct'] * 3)
+        self.assertEqual(len(self.server.date_updates), 3)
+
+    def test_photos_are_repaired_too(self):
+        self.seed(['DJI_20260908182440_0001_D.JPG', 'DJI_20260908182440_0001_D.DNG'])
+        report = repair(self.source, self.config, True, 'filename')
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['status'] for r in report['items']], ['updated_dates_verified'] * 2)
+        self.assertTrue(all(r['target'] == '2026-09-08T18:24:40-07:00' for r in report['items']))
+        self.assertEqual(len(self.server.date_updates), 2)
+        self.assertEqual({a['info']['type'] for a in self.server.assets.values()}, {'IMAGE'})
 
     def test_wrong_owner_cannot_be_edited(self):
         self.seed()

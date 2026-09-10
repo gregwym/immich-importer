@@ -1171,7 +1171,7 @@ SOURCES = [('__init__',
   '\n'
   '\n'
   'def filename_date(item):\n'
-  "    match = re.match(r'^(?:DJI_|(?:PRO_)?(?:VID|LRV)_)(\\d{8})_?(\\d{6})_', item.path.name, "
+  "    match = re.match(r'^(?:DJI_|(?:PRO_)?(?:VID|LRV|IMG)_)(\\d{8})_?(\\d{6})_', item.path.name, "
   're.I)\n'
   "    return datetime.strptime(''.join(match.groups()), '%Y%m%d%H%M%S') if match else None\n"
   '\n'
@@ -1213,16 +1213,8 @@ SOURCES = [('__init__',
   "    return localize(named, zone), 'filename + configured timezone'\n"
   '\n'
   '\n'
-  'def time_matches(item, info):\n'
-  '    if not item.capture_time:\n'
-  '        return True\n'
-  '    expected = parse_date(item.capture_time)\n'
-  "    exif = info.get('exifInfo') or {}\n"
-  "    actual = parse_date(exif.get('dateTimeOriginal'))\n"
-  "    local = parse_date(info.get('localDateTime'))\n"
-  "    zone = exif.get('timeZone')\n"
-  '    if not actual or actual.tzinfo is None or not local or not zone:\n'
-  '        return False\n'
+  'def zone_offset(zone, expected):\n'
+  '    """UTC offset Immich\'s timeZone string implies at the expected wall time, or None."""\n'
   '    try:\n'
   "        normalized = re.sub(r'^UTC', '', zone)\n"
   "        if normalized in ('', '+0', '+00', '+00:00'):\n"
@@ -1231,12 +1223,38 @@ SOURCES = [('__init__',
   "            sign, parts = normalized[0], normalized[1:].split(':')\n"
   "            normalized = sign + parts[0].zfill(2) + ':' + (parts[1] if len(parts) == 2 else "
   "'00')\n"
-  '        offset = localize(expected.replace(tzinfo=None), normalized).utcoffset()\n'
+  '        return localize(expected.replace(tzinfo=None), normalized).utcoffset()\n'
   '    except (ImportFailure, ValueError, OverflowError):\n'
+  '        return None\n'
+  '\n'
+  '\n'
+  'def exif_matches(item, info):\n'
+  '    """dateTimeOriginal instant and timeZone offset: updated synchronously by a date edit."""\n'
+  '    if not item.capture_time:\n'
+  '        return True\n'
+  '    expected = parse_date(item.capture_time)\n'
+  "    exif = info.get('exifInfo') or {}\n"
+  "    actual = parse_date(exif.get('dateTimeOriginal'))\n"
+  "    zone = exif.get('timeZone')\n"
+  '    if not actual or actual.tzinfo is None or not zone:\n'
   '        return False\n'
-  '    return (abs((actual - expected).total_seconds()) < 1 and offset == expected.utcoffset()\n'
-  '            and abs((local.replace(tzinfo=None) - '
-  'expected.replace(tzinfo=None)).total_seconds()) < 1)\n'),
+  '    return abs((actual - expected).total_seconds()) < 1 and zone_offset(zone, expected) == '
+  'expected.utcoffset()\n'
+  '\n'
+  '\n'
+  'def local_matches(item, info):\n'
+  '    """localDateTime (timeline day/hour): refreshed by Immich\'s metadata job after '
+  'SidecarWrite."""\n'
+  '    if not item.capture_time:\n'
+  '        return True\n'
+  '    expected = parse_date(item.capture_time)\n'
+  "    local = parse_date(info.get('localDateTime'))\n"
+  '    return bool(local) and abs((local.replace(tzinfo=None) - '
+  'expected.replace(tzinfo=None)).total_seconds()) < 1\n'
+  '\n'
+  '\n'
+  'def time_matches(item, info):\n'
+  '    return exif_matches(item, info) and local_matches(item, info)\n'),
  ('metadata',
   '"""Read with ExifTool; merge camera properties into an in-memory XMP document."""\n'
   'import json\n'
@@ -2743,7 +2761,8 @@ SOURCES = [('__init__',
   '\n'
   'from . import __version__, hashcache\n'
   'from .api import Immich\n'
-  'from .capture_time import TIME_TAGS, choose, time_matches\n'
+  'from .capture_time import TIME_TAGS, choose, exif_matches, filename_date, local_matches, '
+  'time_matches\n'
   'from .config import authenticate, load_config\n'
   'from .files import atomic_json, changed, hashes, locked, validate_roots\n'
   'from .metadata import probe, probe_batch\n'
@@ -2752,8 +2771,8 @@ SOURCES = [('__init__',
   '\n'
   '\n'
   'def parser():\n'
-  "    p = argparse.ArgumentParser(description='Repair existing camera video capture dates; "
-  "defaults to read-only preview')\n"
+  "    p = argparse.ArgumentParser(description='Repair capture dates of imported camera photos and "
+  "videos; defaults to read-only preview')\n"
   "    p.add_argument('path', nargs='?', default='.', help='Original media directory; assets "
   "matched by checksum')\n"
   '    mode = p.add_mutually_exclusive_group()\n'
@@ -2798,10 +2817,14 @@ SOURCES = [('__init__',
   "            'description': exif.get('description')}\n"
   '\n'
   '\n'
+  'def kind(item):\n'
+  "    return 'VIDEO' if item.path.suffix.lower() in ('.mp4', '.insv') else 'IMAGE'\n"
+  '\n'
+  '\n'
   'def find_by_name(api, item):\n'
   '    """Unique existing asset with the same original file name, size and type, else None."""\n'
   '    candidates = [a for a in api.search_by_name(item.path.name)\n'
-  "                  if a.get('type') == 'VIDEO' and a.get('isTrashed') is False\n"
+  "                  if a.get('type') == kind(item) and a.get('isTrashed') is False\n"
   "                  and (a.get('exifInfo') or {}).get('fileSizeInByte') == item.size]\n"
   '    if len(candidates) != 1:\n'
   '        return None\n'
@@ -2823,14 +2846,16 @@ SOURCES = [('__init__',
   "              'xmpPersistence': 'Immich queues SidecarWrite after date edits; no independent "
   "completion receipt'}\n"
   "    report['errors'].extend('UNKNOWN FILE: ' + i.relative for i in plan.unknown)\n"
-  "    videos = [i for i in plan.items if i.route == 'timeline' and i.path.suffix.lower() in "
-  "('.mp4', '.insv')]\n"
-  '    if not videos:\n'
-  "        report['errors'].append('No recognized preservable camera videos in source')\n"
+  '    # Camera photos and videos with a clock in their name (DJI_, VID_/LRV_, IMG_).\n'
+  "    media = [i for i in plan.items if i.route in ('timeline', 'probe') and filename_date(i) is "
+  'not None]\n'
+  '    if not media:\n'
+  "        report['errors'].append('No recognized camera photos or videos in source')\n"
+  "    report['warnings'] = []\n"
   '    groups = {}\n'
-  '    tags_by_path = probe_batch([i.path for i in videos], config.exiftool_bin) if time_source == '
-  "'auto' and videos else {}\n"
-  '    for item in videos:\n'
+  '    tags_by_path = probe_batch([i.path for i in media], config.exiftool_bin) if time_source == '
+  "'auto' and media else {}\n"
+  '    for item in media:\n'
   "        row = {'path': item.relative, 'assetId': None, 'status': 'planned'}\n"
   "        report['items'].append(row)\n"
   '        groups.setdefault(item.bundle or item.relative, []).append((item, row))\n'
@@ -2861,7 +2886,7 @@ SOURCES = [('__init__',
   '    api = Immich(config, log)\n'
   '    api.preflight()\n'
   '    report.update(server=config.api_url, ownerId=api.owner_id)\n'
-  "    pairs = list(zip(videos, report['items']))\n"
+  "    pairs = list(zip(media, report['items']))\n"
   '    # Identify each asset with the cheapest reliable evidence: the hash index\n'
   '    # (same file seen before), then a unique Immich asset with the same original\n'
   "    # file name and byte size (the usual case for Immich's own library copy, where\n"
@@ -2912,8 +2937,8 @@ SOURCES = [('__init__',
   "            row['assetId'] = item.asset_id\n"
   '            info = api.info(item.asset_id)\n'
   '            api.validate_identity(item, info)\n'
-  "            if info.get('type') != 'VIDEO':\n"
-  "                raise ImportFailure('Matching asset is not a video')\n"
+  "            if info.get('type') != kind(item):\n"
+  "                raise ImportFailure('Matching asset is not a ' + kind(item).lower())\n"
   '            row.update(before=dates(info), preserved=unaffected(info))\n'
   '            if item.asset_id in seen:\n'
   '                previous = seen[item.asset_id]\n'
@@ -2924,8 +2949,14 @@ SOURCES = [('__init__',
   "                row.update(status='same_asset', duplicateOf=previous['path'])\n"
   '            else:\n'
   '                seen[item.asset_id] = row\n'
-  "                row['status'] = 'already_correct' if time_matches(item, info) else "
-  "'would_update'\n"
+  '                if time_matches(item, info):\n'
+  "                    row['status'] = 'already_correct'\n"
+  '                elif exif_matches(item, info):\n'
+  "                    # Date already edited; Immich's SidecarWrite -> metadata job has not "
+  'refreshed localDateTime yet.\n'
+  "                    row['status'] = 'refresh_pending'\n"
+  '                else:\n'
+  "                    row['status'] = 'would_update'\n"
   '        except (ImportFailure, OSError, ValueError) as error:\n'
   "            row.update(status='failed', error=str(error))\n"
   "    report['errors'].extend(r['path'] + ': ' + r['error'] for r in report['items'] if "
@@ -2940,6 +2971,9 @@ SOURCES = [('__init__',
   "(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid4().hex + '.json')\n"
   "    report.update(auditReport=str(journal), result='IN PROGRESS', exitCode=1)\n"
   '    atomic_json(journal, report)  # Write before any date mutation, including old values.\n'
+  '    # Phase 1: one PUT per asset. Immich stores dateTimeOriginal and timeZone\n'
+  '    # synchronously (locked columns) and queues SidecarWrite; SidecarWrite then\n'
+  '    # queues AssetExtractMetadata, which is what refreshes localDateTime.\n'
   '    for item, row in pairs:\n'
   "        if row['status'] != 'would_update':\n"
   '            continue\n'
@@ -2952,33 +2986,68 @@ SOURCES = [('__init__',
   "                raise ImportFailure('Asset changed after preview; rerun to review')\n"
   "            row['status'] = 'updating'\n"
   '            atomic_json(journal, report)\n'
-  '            # This endpoint derives the fixed timezone from the ISO offset,\n'
-  '            # locks the date properties and queues official SidecarWrite.\n'
+  "            log('Set date: ' + item.relative)\n"
   "            api.request('PUT', '/assets/' + item.asset_id, json={'dateTimeOriginal': "
   'item.capture_time})\n'
   "            row['xmpWrite'] = 'queued_by_immich_not_independently_verified'\n"
-  '            deadline = time.monotonic() + config.verify_timeout\n'
-  '            while True:\n'
+  '            info = api.info(item.asset_id)\n'
+  '            api.validate_identity(item, info)\n'
+  "            row['after'] = dates(info)\n"
+  "            if unaffected(info) != row['preserved']:\n"
+  "                raise ImportFailure('Non-date metadata changed during repair')\n"
+  '            if not exif_matches(item, info):\n'
+  "                raise ImportFailure('Server did not store the requested "
+  "dateTimeOriginal/timeZone: ' + json.dumps(row['after']))\n"
+  "            row['status'] = 'dates_set'\n"
+  '        except (ImportFailure, OSError, ValueError) as error:\n'
+  "            row.update(status='failed', error=str(error))\n"
+  "            report['errors'].append(item.relative + ': ' + str(error))\n"
+  '        atomic_json(journal, report)\n'
+  "    # Phase 2: wait once for every asset's asynchronous localDateTime refresh.\n"
+  "    waiting = [(i, r) for i, r in pairs if r['status'] in ('dates_set', 'refresh_pending')]\n"
+  '    deadline = time.monotonic() + config.verify_timeout\n'
+  '    while waiting:\n'
+  "        log('Waiting for Immich metadata refresh: ' + str(len(waiting)) + ' asset(s)')\n"
+  '        for item, row in list(waiting):\n'
+  '            try:\n'
   '                info = api.info(item.asset_id)\n'
   '                api.validate_identity(item, info)\n'
   "                if unaffected(info) != row['preserved']:\n"
   "                    raise ImportFailure('Non-date metadata changed during repair')\n"
   "                row['after'] = dates(info)\n"
-  '                if time_matches(item, info):\n'
+  '                if not exif_matches(item, info):\n'
+  "                    raise ImportFailure('Date fields changed again after the edit; rerun to "
+  "review')\n"
+  '                if local_matches(item, info):\n'
   "                    row['status'] = 'updated_dates_verified'\n"
-  '                    break\n'
-  '                if time.monotonic() >= deadline:\n'
-  "                    raise ImportFailure('Date/time/timezone verification timed out')\n"
-  '                time.sleep(min(config.poll_interval, max(0, deadline - time.monotonic())))\n'
-  '        except (ImportFailure, OSError, ValueError) as error:\n'
-  "            row.update(status='failed', error=str(error))\n"
-  "            report['errors'].append(item.relative + ': ' + str(error))\n"
+  '                    waiting.remove((item, row))\n'
+  '            except (ImportFailure, OSError, ValueError) as error:\n'
+  "                row.update(status='failed', error=str(error))\n"
+  "                report['errors'].append(item.relative + ': ' + str(error))\n"
+  '                waiting.remove((item, row))\n'
   '        atomic_json(journal, report)\n'
+  '        if not waiting:\n'
+  '            break\n'
+  '        if time.monotonic() >= deadline:\n'
+  '            for item, row in waiting:\n'
+  "                row['status'] = 'dates_set_local_time_pending'\n"
+  "            report['warnings'].append(str(len(waiting)) + ' asset(s): dateTimeOriginal/timeZone "
+  "are set and locked; the timeline position '\n"
+  "                                      '(localDateTime) refreshes when Immich finishes "
+  "SidecarWrite and the follow-up metadata job. '\n"
+  "                                      'Rerun later to verify.')\n"
+  '            break\n'
+  '        time.sleep(min(config.poll_interval, max(0, deadline - time.monotonic())))\n'
   '    for item, row in pairs:\n'
   '        if changed(item.path, item.fingerprint):\n'
   "            report['errors'].append('Source changed: ' + item.relative)\n"
-  "    report['result'] = 'DATES VERIFIED; XMP WRITE ASYNCHRONOUS' if not report['errors'] else "
-  "'REPAIR INCOMPLETE'\n"
+  "    pending = sum(1 for _, r in pairs if r['status'] == 'dates_set_local_time_pending')\n"
+  "    if report['errors']:\n"
+  "        report['result'] = 'REPAIR INCOMPLETE'\n"
+  '    elif pending:\n'
+  "        report['result'] = 'DATES SET; TIMELINE REFRESH PENDING FOR ' + str(pending)\n"
+  '    else:\n'
+  "        report['result'] = 'DATES VERIFIED; XMP WRITE ASYNCHRONOUS'\n"
   "    report['exitCode'] = 1 if report['errors'] else 0\n"
   '    atomic_json(journal, report)\n'
   '    return report\n'
@@ -3008,6 +3077,8 @@ SOURCES = [('__init__',
   "                print('  before: ' + json.dumps(row['before']))\n"
   "            if 'target' in row:\n"
   "                print('  target: ' + row['target'])\n"
+  "        for warning in report.get('warnings', []):\n"
+  "            print('WARNING: ' + warning)\n"
   "        for error in report.get('errors', []):\n"
   "            print('ERROR: ' + error)\n"
   "        if report.get('auditReport'):\n"

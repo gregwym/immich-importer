@@ -51,6 +51,9 @@ class FakeServer:
         self.on_upload = lambda: None
         self.date_updates = []
         self.reject_date_updates = False
+        self.ignore_date_updates = False
+        self.defer_jobs = False
+        self.pending_jobs = []
         state = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -180,9 +183,20 @@ class FakeServer:
                     state.date_updates.append(body)
                     asset = state.assets[identifier]
                     exif = asset["info"]["exifInfo"]
-                    asset["xmp"] = make_xmp({"make": exif.get("make", ""), "model": exif.get("model", ""),
-                                              "lensModel": exif.get("lensModel", "")}, asset["xmp"], body["dateTimeOriginal"])
-                    state.extract(identifier)
+                    if not state.ignore_date_updates:
+                        # v3.1.0 updateExif: exif columns synchronously, luxon fixed-zone name,
+                        # then SidecarWrite -> AssetExtractMetadata refreshes localDateTime later.
+                        from datetime import datetime as dt, timezone as tz
+                        date = dt.fromisoformat(body["dateTimeOriginal"])
+                        offset = int(date.utcoffset().total_seconds() // 60)
+                        name = "UTC" + ("+" if offset >= 0 else "-") + str(abs(offset) // 60) + (":" + str(abs(offset) % 60).zfill(2) if abs(offset) % 60 else "")
+                        exif.update(dateTimeOriginal=date.astimezone(tz.utc).isoformat(), timeZone=name)
+                        camera = {k: exif.get(k) or "" for k in ("make", "model", "lensModel")}
+                        asset["xmp"] = make_xmp(camera, asset["xmp"], body["dateTimeOriginal"])
+                        if state.defer_jobs:
+                            state.pending_jobs.append(identifier)
+                        else:
+                            state.extract(identifier)
                 elif not state.bad_visibility:
                     state.assets[identifier]["info"]["visibility"] = body["visibility"]
                 return self.reply(state.assets[identifier]["info"])
@@ -199,14 +213,19 @@ class FakeServer:
             props = {}
             for element in root.iter():
                 props.update({k.rsplit("}", 1)[-1]: v for k, v in element.attrib.items()})
-            asset["info"]["exifInfo"].update({"make": props.get("Make"), "model": props.get("Model"),
-                                              "lensModel": props.get("LensID", props.get("LensModel"))})
+            camera = {"make": props.get("Make"), "model": props.get("Model"), "lensModel": props.get("LensID", props.get("LensModel"))}
+            # Like Immich, a sidecar without camera fields leaves the extracted ones alone.
+            asset["info"]["exifInfo"].update({k: v for k, v in camera.items() if v})
             if props.get("DateTimeOriginal"):
                 from datetime import datetime, timezone
                 date = datetime.fromisoformat(props["DateTimeOriginal"])
                 asset["info"]["exifInfo"].update(dateTimeOriginal=date.astimezone(timezone.utc).isoformat(),
                                                timeZone="UTC" + date.strftime("%z")[:3] + ":" + date.strftime("%z")[3:])
                 asset["info"]["localDateTime"] = date.replace(tzinfo=timezone.utc).isoformat()
+
+    def run_jobs(self):
+        while self.pending_jobs:
+            self.extract(self.pending_jobs.pop(0))
 
     def close(self):
         self.http.shutdown()

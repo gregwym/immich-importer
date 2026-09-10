@@ -145,7 +145,7 @@ def localize(value, zone):
 
 
 def filename_date(item):
-    match = re.match(r'^(?:DJI_|(?:PRO_)?(?:VID|LRV)_)(\d{8})_?(\d{6})_', item.path.name, re.I)
+    match = re.match(r'^(?:DJI_|(?:PRO_)?(?:VID|LRV|IMG)_)(\d{8})_?(\d{6})_', item.path.name, re.I)
     return datetime.strptime(''.join(match.groups()), '%Y%m%d%H%M%S') if match else None
 
 
@@ -183,16 +183,8 @@ def choose(members, zone):
     return localize(named, zone), 'filename + configured timezone'
 
 
-def time_matches(item, info):
-    if not item.capture_time:
-        return True
-    expected = parse_date(item.capture_time)
-    exif = info.get('exifInfo') or {}
-    actual = parse_date(exif.get('dateTimeOriginal'))
-    local = parse_date(info.get('localDateTime'))
-    zone = exif.get('timeZone')
-    if not actual or actual.tzinfo is None or not local or not zone:
-        return False
+def zone_offset(zone, expected):
+    """UTC offset Immich's timeZone string implies at the expected wall time, or None."""
     try:
         normalized = re.sub(r'^UTC', '', zone)
         if normalized in ('', '+0', '+00', '+00:00'):
@@ -200,8 +192,32 @@ def time_matches(item, info):
         elif re.fullmatch(r'[+-]\d{1,2}(?::\d{2})?', normalized):
             sign, parts = normalized[0], normalized[1:].split(':')
             normalized = sign + parts[0].zfill(2) + ':' + (parts[1] if len(parts) == 2 else '00')
-        offset = localize(expected.replace(tzinfo=None), normalized).utcoffset()
+        return localize(expected.replace(tzinfo=None), normalized).utcoffset()
     except (ImportFailure, ValueError, OverflowError):
+        return None
+
+
+def exif_matches(item, info):
+    """dateTimeOriginal instant and timeZone offset: updated synchronously by a date edit."""
+    if not item.capture_time:
+        return True
+    expected = parse_date(item.capture_time)
+    exif = info.get('exifInfo') or {}
+    actual = parse_date(exif.get('dateTimeOriginal'))
+    zone = exif.get('timeZone')
+    if not actual or actual.tzinfo is None or not zone:
         return False
-    return (abs((actual - expected).total_seconds()) < 1 and offset == expected.utcoffset()
-            and abs((local.replace(tzinfo=None) - expected.replace(tzinfo=None)).total_seconds()) < 1)
+    return abs((actual - expected).total_seconds()) < 1 and zone_offset(zone, expected) == expected.utcoffset()
+
+
+def local_matches(item, info):
+    """localDateTime (timeline day/hour): refreshed by Immich's metadata job after SidecarWrite."""
+    if not item.capture_time:
+        return True
+    expected = parse_date(item.capture_time)
+    local = parse_date(info.get('localDateTime'))
+    return bool(local) and abs((local.replace(tzinfo=None) - expected.replace(tzinfo=None)).total_seconds()) < 1
+
+
+def time_matches(item, info):
+    return exif_matches(item, info) and local_matches(item, info)
