@@ -18,6 +18,7 @@ Paths below are relative to the configured `/api` URL.
 | `GET /assets/{id}` | `id`, `ownerId`, base64 SHA-1 `checksum`, `visibility`, `libraryId`, `isTrashed`, `isOffline`, `exifInfo` |
 | `PUT /assets/{id}` | Importer: visibility. Separate repair CLI: only `dateTimeOriginal` with explicit offset; service derives timeZone and queues SidecarWrite |
 | `POST /assets/jobs` | `{assetIds: [...], name: "refresh-metadata"}`; needs `job.create`. Requested only for already-present assets whose `exifInfo` does not match; fresh uploads rely on the extraction Immich queues itself. HTTP 403 is downgraded to a report warning |
+| `POST /search/metadata` | `{originalFileName, withExif: true, size, page}`; exact name match, filtered client-side to this owner, `type`, not trashed and `exifInfo.fileSizeInByte`. A unique hit identifies an asset for date repair without hashing |
 | `POST /stacks` | `{assetIds: [primary, ...]}`; the first ID becomes `primaryAssetId`. One stack per RAW + rendered pair and per 360 bundle |
 | `GET /stacks/{id}` | `id`, `primaryAssetId`, `assets[]`; confirms membership and primary after creation or on rerun |
 | `DELETE /stacks/{id}` | Unstacks without deleting assets; used only to rebuild a stack made solely of this importer's members |

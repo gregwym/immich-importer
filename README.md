@@ -150,6 +150,7 @@ immich server-info
 
 ```sh
 camera-repair-time --capture-timezone America/Los_Angeles /path/to/originals
+camera-repair-time /volume1/immich/media/library/camera/2026/2026-09-09   # Immich 自己的库目录也可以
 ```
 
 确认按文件名修复这些原始视频时，可显式选择 `filename`；加 `--apply` 才执行：
@@ -157,6 +158,15 @@ camera-repair-time --capture-timezone America/Los_Angeles /path/to/originals
 ```sh
 camera-repair-time --time-source filename --capture-timezone America/Los_Angeles /path/to/originals
 camera-repair-time --apply --time-source filename --capture-timezone America/Los_Angeles /path/to/originals
+camera-repair-time --match checksum /path/to/originals   # 强制按 checksum 匹配
+```
+
+asset 匹配顺序（`--match auto`）：1）hash 索引命中（同一文件之前处理过）；2）Immich 里 originalFileName、字节大小、类型都相同且唯一的 asset，
+用 `POST /search/metadata` 查找，不读文件。这是对 Immich 库目录（`/volume1/immich/media/library/...`）做修复时的常态，
+因为对 Immich 自己保存的文件再算 hash 只是拿 Immich 的副本和它自己比较；3）以上都不成立（没找到或同名同大小不唯一）时读文件算 hash，
+按 checksum 匹配。报告里每个文件的 `hashSource` 标明用了哪一种。`--match checksum` 强制第 3 种。
+
+```sh
 ```
 
 `--time-source auto`（默认）复用新导入的可靠带时区 metadata → 文件名规则；

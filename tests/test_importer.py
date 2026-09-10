@@ -106,6 +106,10 @@ class FakeServer:
                             result.update(assetId=found["id"], isTrashed=found["isTrashed"], reason="duplicate")
                         results.append(result)
                     return self.reply({"results": results})
+                if self.path == "/api/search/metadata":
+                    query = json.loads(body)
+                    items = [a["info"] for a in state.assets.values() if a["info"]["originalFileName"] == query.get("originalFileName")]
+                    return self.reply({"assets": {"items": items, "nextPage": None, "total": len(items)}})
                 if self.path == "/api/stacks":
                     ids = json.loads(body)["assetIds"]
                     identifier = str(uuid4())
@@ -144,9 +148,10 @@ class FakeServer:
                         # Real v3.1.0 duplicate upload does NOT attach the sidecar.
                         return self.reply({"id": found["id"], "status": "duplicate"})
                     identifier = str(uuid4())
-                    info = {"id": identifier, "ownerId": OWNER, "checksum": checksum, "type": "VIDEO",
-                            "visibility": fields["visibility"][1].decode(), "isTrashed": False,
-                            "isOffline": False, "libraryId": None, "exifInfo": {}, "originalFileName": filename}
+                    info = {"id": identifier, "ownerId": OWNER, "checksum": checksum,
+                            "type": "VIDEO" if filename.lower().endswith((".mp4", ".insv")) else "IMAGE",
+                            "visibility": fields["visibility"][1].decode(), "isTrashed": False, "isOffline": False,
+                            "libraryId": None, "exifInfo": {"fileSizeInByte": len(media)}, "originalFileName": filename}
                     state.assets[identifier] = {"info": info, "xmp": xmp, "media": media}
                     state.uploads.append(fields)
                     state.extract(identifier)  # Immich queues extraction itself after upload.
@@ -194,8 +199,8 @@ class FakeServer:
             props = {}
             for element in root.iter():
                 props.update({k.rsplit("}", 1)[-1]: v for k, v in element.attrib.items()})
-            asset["info"]["exifInfo"] = {"make": props.get("Make"), "model": props.get("Model"),
-                                        "lensModel": props.get("LensID", props.get("LensModel"))}
+            asset["info"]["exifInfo"].update({"make": props.get("Make"), "model": props.get("Model"),
+                                              "lensModel": props.get("LensID", props.get("LensModel"))})
             if props.get("DateTimeOriginal"):
                 from datetime import datetime, timezone
                 date = datetime.fromisoformat(props["DateTimeOriginal"])

@@ -215,6 +215,19 @@ class Immich:
             raise ImportFailure("Unrecognized Immich upload response")
         return asset_id(response.get("id")), response["status"]
 
+    def search_by_name(self, name):
+        """Assets of this owner whose originalFileName equals name (with EXIF)."""
+        found, page = [], 1
+        while page:
+            data = self.request("POST", "/search/metadata", json={"originalFileName": name, "withExif": True, "size": 100, "page": page})
+            assets = data.get("assets") if isinstance(data, dict) else None
+            if not isinstance(assets, dict) or not isinstance(assets.get("items"), list):
+                raise ImportFailure("Invalid metadata search response")
+            found.extend(a for a in assets["items"] if isinstance(a, dict) and a.get("originalFileName") == name
+                         and a.get("ownerId") == self.owner_id)
+            page = int(assets["nextPage"]) if assets.get("nextPage") and page < 50 else None
+        return found
+
     def stack(self, identifier):
         value = self.request("GET", "/stacks/" + asset_id(identifier))
         if not isinstance(value, dict) or not isinstance(value.get("assets"), list):

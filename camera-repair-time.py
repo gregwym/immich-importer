@@ -1870,6 +1870,21 @@ SOURCES = [('__init__',
   '            raise ImportFailure("Unrecognized Immich upload response")\n'
   '        return asset_id(response.get("id")), response["status"]\n'
   '\n'
+  '    def search_by_name(self, name):\n'
+  '        """Assets of this owner whose originalFileName equals name (with EXIF)."""\n'
+  '        found, page = [], 1\n'
+  '        while page:\n'
+  '            data = self.request("POST", "/search/metadata", json={"originalFileName": name, '
+  '"withExif": True, "size": 100, "page": page})\n'
+  '            assets = data.get("assets") if isinstance(data, dict) else None\n'
+  '            if not isinstance(assets, dict) or not isinstance(assets.get("items"), list):\n'
+  '                raise ImportFailure("Invalid metadata search response")\n'
+  '            found.extend(a for a in assets["items"] if isinstance(a, dict) and '
+  'a.get("originalFileName") == name\n'
+  '                         and a.get("ownerId") == self.owner_id)\n'
+  '            page = int(assets["nextPage"]) if assets.get("nextPage") and page < 50 else None\n'
+  '        return found\n'
+  '\n'
   '    def stack(self, identifier):\n'
   '        value = self.request("GET", "/stacks/" + asset_id(identifier))\n'
   '        if not isinstance(value, dict) or not isinstance(value.get("assets"), list):\n'
@@ -2718,6 +2733,7 @@ SOURCES = [('__init__',
  ('repair_time',
   '"""Repair existing video dates via Immich\'s supported date-edit/sidecar workflow."""\n'
   'import argparse\n'
+  'import base64\n'
   'import json\n'
   'import sys\n'
   'import time\n'
@@ -2750,6 +2766,9 @@ SOURCES = [('__init__',
   "disregard embedded dates')\n"
   "    p.add_argument('--capture-timezone', help='Shooting timezone for filename dates, e.g. "
   "America/Los_Angeles')\n"
+  "    p.add_argument('--match', choices=('auto', 'checksum'), default='auto',\n"
+  "                   help='auto: hash index, then a unique Immich asset with the same file name "
+  "and size, then hashing; checksum: always hash')\n"
   "    p.add_argument('--config')\n"
   "    p.add_argument('--manifest-root', help='Parent directory for durable time-repairs audit "
   "reports')\n"
@@ -2779,10 +2798,26 @@ SOURCES = [('__init__',
   "            'description': exif.get('description')}\n"
   '\n'
   '\n'
-  "def repair(source, config, apply=False, time_source='auto', log=lambda s: None):\n"
+  'def find_by_name(api, item):\n'
+  '    """Unique existing asset with the same original file name, size and type, else None."""\n'
+  '    candidates = [a for a in api.search_by_name(item.path.name)\n'
+  "                  if a.get('type') == 'VIDEO' and a.get('isTrashed') is False\n"
+  "                  and (a.get('exifInfo') or {}).get('fileSizeInByte') == item.size]\n"
+  '    if len(candidates) != 1:\n'
+  '        return None\n'
+  '    asset = candidates[0]\n'
+  '    try:\n'
+  "        checksum = base64.b64decode(asset['checksum'], validate=True).hex()\n"
+  '    except (KeyError, ValueError, TypeError):\n'
+  '        return None\n'
+  '    return asset, checksum\n'
+  '\n'
+  '\n'
+  "def repair(source, config, apply=False, time_source='auto', log=lambda s: None, match='auto'):\n"
   '    validate_roots(source, config.companion_root, config.manifest_root)\n'
   '    plan = scan(source)\n'
-  "    report = {'source': str(source), 'apply': apply, 'timeSource': time_source,\n"
+  "    report = {'source': str(source), 'apply': apply, 'timeSource': time_source, 'match': "
+  'match,\n'
   "              'captureTimezone': config.capture_timezone, 'items': [], 'errors': "
   'list(plan.errors),\n'
   "              'xmpPersistence': 'Immich queues SidecarWrite after date edits; no independent "
@@ -2811,52 +2846,69 @@ SOURCES = [('__init__',
   "                raise ImportFailure('Source changed during metadata read')\n"
   '        except (ImportFailure, OSError, ValueError) as error:\n'
   "            row.update(status='failed', error=str(error))\n"
-  '    now = datetime.now(timezone.utc)\n'
-  '    with locked(config.manifest_root):\n'
-  '        index = hashcache.load(config.manifest_root)\n'
-  '        for members in groups.values():\n'
-  '            try:\n'
-  "                if any(row['status'] == 'failed' for _, row in members):\n"
-  "                    raise ImportFailure('Bundle member cannot be reviewed')\n"
-  '                value, origin = choose([i for i, _ in members], config.capture_timezone)\n'
-  '                for item, row in members:\n'
-  '                    item.capture_time = value.isoformat()\n'
-  '                    row.update(target=item.capture_time, timeSource=origin)\n'
-  '                    cached = hashcache.lookup(index, item)\n'
-  '                    if cached:\n'
-  '                        item.sha1, item.sha256 = cached\n'
-  "                        item.hash_source = 'index'\n"
-  '                    else:\n'
-  "                        log('Hash original: ' + item.relative)\n"
-  '                        item.sha1, item.sha256 = hashes(item.path, item.fingerprint)\n'
-  "                        item.hash_source = 'read'\n"
-  '                        hashcache.record(index, item, now)\n'
-  '                    row.update(sha1=item.sha1, sha256=item.sha256, '
-  'hashSource=item.hash_source)\n'
-  '            except (ImportFailure, OSError, ValueError) as error:\n'
-  '                for _, row in members:\n'
-  "                    row.update(status='failed', error=str(error))\n"
+  '    for members in groups.values():\n'
   '        try:\n'
-  '            hashcache.save(config.manifest_root, index, now)\n'
-  '        except (OSError, ImportFailure):\n'
-  "            report['errors'].append('Failed to persist hash index')\n"
+  "            if any(row['status'] == 'failed' for _, row in members):\n"
+  "                raise ImportFailure('Bundle member cannot be reviewed')\n"
+  '            value, origin = choose([i for i, _ in members], config.capture_timezone)\n'
+  '            for item, row in members:\n'
+  '                item.capture_time = value.isoformat()\n'
+  '                row.update(target=item.capture_time, timeSource=origin)\n'
+  '        except (ImportFailure, OSError, ValueError) as error:\n'
+  '            for _, row in members:\n'
+  "                row.update(status='failed', error=str(error))\n"
   '    authenticate(config)\n'
   '    api = Immich(config, log)\n'
   '    api.preflight()\n'
   '    report.update(server=config.api_url, ownerId=api.owner_id)\n'
   "    pairs = list(zip(videos, report['items']))\n"
+  '    # Identify each asset with the cheapest reliable evidence: the hash index\n'
+  '    # (same file seen before), then a unique Immich asset with the same original\n'
+  "    # file name and byte size (the usual case for Immich's own library copy, where\n"
+  "    # hashing would only compare Immich's file with itself), and only then hashing.\n"
+  '    now = datetime.now(timezone.utc)\n'
+  '    with locked(config.manifest_root):\n'
+  '        index = hashcache.load(config.manifest_root)\n'
+  '        for item, row in pairs:\n'
+  "            if row['status'] == 'failed':\n"
+  '                continue\n'
+  '            try:\n'
+  "                cached = hashcache.lookup(index, item) if match == 'auto' else None\n"
+  '                found = None\n'
+  '                if cached:\n'
+  '                    item.sha1, item.sha256 = cached\n'
+  "                    item.hash_source = 'index'\n"
+  "                elif match == 'auto' and (found := find_by_name(api, item)):\n"
+  '                    asset, checksum = found\n'
+  "                    item.asset_id, item.sha1, item.hash_source = asset['id'], checksum, "
+  "'name+size'\n"
+  "                    log('Matched by name and size: ' + item.relative)\n"
+  '                else:\n'
+  "                    log('Hash original: ' + item.relative)\n"
+  '                    item.sha1, item.sha256 = hashes(item.path, item.fingerprint)\n'
+  "                    item.hash_source = 'read'\n"
+  '                    hashcache.record(index, item, now)\n'
+  '                row.update(sha1=item.sha1, sha256=item.sha256 or None, '
+  'hashSource=item.hash_source)\n'
+  '            except (ImportFailure, OSError, ValueError) as error:\n'
+  "                row.update(status='failed', error=str(error))\n"
+  '        try:\n'
+  '            hashcache.save(config.manifest_root, index, now)\n'
+  '        except (OSError, ImportFailure):\n'
+  "            report['errors'].append('Failed to persist hash index')\n"
   "    eligible = [(i, r) for i, r in pairs if r['status'] != 'failed']\n"
-  '    matches = api.check([i for i, _ in eligible])\n'
+  '    matches = api.check([i for i, _ in eligible if not i.asset_id])\n'
   '    seen = {}\n'
   '    for item, row in eligible:\n'
   '        try:\n'
-  '            match = matches.get(item.relative)\n'
-  '            if not match:\n'
-  "                raise ImportFailure('No existing asset matches source checksum; nothing "
+  '            if not item.asset_id:\n'
+  '                found = matches.get(item.relative)\n'
+  '                if not found:\n'
+  "                    raise ImportFailure('No existing asset matches source checksum; nothing "
   "uploaded')\n"
-  '            item.asset_id, trashed = match\n'
-  '            if trashed:\n'
-  "                raise ImportFailure('Matching asset is in trash')\n"
+  '                item.asset_id, trashed = found\n'
+  '                if trashed:\n'
+  "                    raise ImportFailure('Matching asset is in trash')\n"
   "            row['assetId'] = item.asset_id\n"
   '            info = api.info(item.asset_id)\n'
   '            api.validate_identity(item, info)\n'
@@ -2940,7 +2992,7 @@ SOURCES = [('__init__',
   '        source = Path(args.path).expanduser().resolve(strict=True)\n'
   '        if not source.is_dir():\n'
   "            raise ImportFailure('Source must be a directory')\n"
-  '        report = repair(source, config, args.apply, args.time_source, log)\n'
+  '        report = repair(source, config, args.apply, args.time_source, log, args.match)\n'
   '    except (ImportFailure, OSError, ValueError) as error:\n'
   "        report = {'result': 'REPAIR INCOMPLETE', 'exitCode': 1, 'errors': [str(error)], "
   "'items': []}\n"

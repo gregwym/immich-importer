@@ -62,6 +62,29 @@ class RepairTest(Workspace):
         self.assertEqual(report['exitCode'], 0)
         self.assertEqual(len(self.server.date_updates), 3)
 
+    def test_library_copy_matches_by_name_and_size_without_hashing(self):
+        import shutil
+        self.seed()
+        library = self.root / 'library' / '2026' / '2026-01-27'
+        library.mkdir(parents=True)
+        for name in TRIO:
+            shutil.copyfile(self.source / name, library / name)
+        with patch('camera_importer.repair_time.hashes', side_effect=AssertionError('no hashing expected')):
+            report = repair(library, self.config, time_source='filename')
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual([r['status'] for r in report['items']], ['would_update'] * 3)
+        self.assertEqual([r['hashSource'] for r in report['items']], ['name+size'] * 3)
+        self.assertEqual({r['assetId'] for r in report['items']}, set(self.server.assets))
+        self.assertFalse(any(path == '/api/assets/bulk-upload-check' for _, path in self.server.calls))
+        # Two assets with the same name and size are ambiguous: fall back to hashing.
+        duplicate = dict(next(iter(self.server.assets.values()))['info'], id='11111111-1111-4111-8111-111111111111')
+        self.server.assets[duplicate['id']] = {'info': duplicate, 'xmp': None, 'media': b''}
+        report = repair(library, self.config, time_source='filename')
+        self.assertEqual(report['exitCode'], 0, report['errors'])
+        self.assertEqual(sorted(r['hashSource'] for r in report['items']), ['index', 'index', 'read'])
+        report = repair(library, self.config, time_source='filename', match='checksum')
+        self.assertEqual([r['hashSource'] for r in report['items']], ['index'] * 3)
+
     def test_missing_asset_aborts_all_changes(self):
         self.seed()
         self.put('DJI_20260908182440_0001_D.MP4')
