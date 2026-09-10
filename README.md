@@ -164,10 +164,11 @@ camera-repair-time --match checksum /path/to/originals   # 强制按 checksum �
 处理对象是文件名带相机钟点的照片和视频（`DJI_…`、`VID_`/`LRV_`、`IMG_`，含 `PRO_` 变体），JPG / DNG / INSP 与 MP4 / INSV 一视同仁；
 Immich 对没有时区字段的照片 EXIF 同样会记错时刻。
 
-`--apply` 分两步。第一步对每个 asset 发 `PUT /assets/{id}`，Immich **同步**写入并锁定 `dateTimeOriginal` 和 `timeZone`，工具立即核对这两个字段（状态 `dates_set`）。
-第二步是 Immich 的异步链：`SidecarWrite` 任务写 XMP，完成后再排 `AssetExtractMetadata`，这一步才刷新时间线用的 `localDateTime`。
-工具对所有 asset **一起**等待这条链（上限 `verify_timeout`），逐个显示 `updated_dates_verified`；超时不算失败，
-状态记为 `dates_set_local_time_pending`、结果 `DATES SET; TIMELINE REFRESH PENDING`，之后重跑会显示 `refresh_pending` 直到 Immich 完成刷新，再变为 `already_correct`。
+`--apply` 对每个 asset 发一次 `PUT /assets/{id}`，Immich **同步**写入并锁定 `dateTimeOriginal` 和 `timeZone`，
+PUT 成功即为修复完成（状态 `updated`，响应里带回的字段会顺带核对，不做额外轮询）。
+之后是 Immich 自己的异步工作：`SidecarWrite` 写 XMP，完成后 `AssetExtractMetadata` 刷新时间线用的 `localDateTime`，
+如果 Storage Template 含日期，文件还会被移到新日期的目录。所以在 Immich 库目录上运行后，源文件很快会不在原处；
+工具在 apply 后不再复查源文件。重跑时已修好的 asset 显示 `already_correct`。
 
 asset 匹配顺序（`--match auto`）：1）hash 索引命中（同一文件之前处理过）；2）Immich 里 originalFileName、字节大小、类型都相同且唯一的 asset，
 用 `POST /search/metadata` 查找，不读文件。这是对 Immich 库目录（`/volume1/immich/media/library/...`）做修复时的常态，

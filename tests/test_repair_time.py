@@ -111,23 +111,23 @@ class RepairTest(Workspace):
         self.assertEqual(report['exitCode'], 1)
         self.assertTrue(any('did not store' in e for e in report['errors']))
 
-    def test_slow_metadata_job_is_a_pending_warning_not_a_per_asset_wait(self):
+    def test_put_is_the_outcome_even_while_immich_jobs_and_file_moves_are_pending(self):
         self.seed()
         self.server.defer_jobs = True
-        self.config.verify_timeout = 0.5  # a per-asset wait would take three times this
-        started = time.monotonic()
         report = repair(self.source, self.config, True, 'filename')
-        self.assertLess(time.monotonic() - started, 1.2)
         self.assertEqual(report['exitCode'], 0, report['errors'])
-        self.assertEqual([r['status'] for r in report['items']], ['dates_set_local_time_pending'] * 3)
-        self.assertTrue(report['result'].startswith('DATES SET; TIMELINE REFRESH PENDING'))
-        self.assertEqual(len(report['warnings']), 1)
+        self.assertEqual([r['status'] for r in report['items']], ['updated'] * 3)
+        self.assertTrue(report['result'].startswith('DATES UPDATED'))
         self.assertEqual(len(self.server.date_updates), 3)
-        # Preview sees the edit already applied and only the refresh outstanding.
-        report = repair(self.source, self.config, time_source='filename')
-        self.assertEqual([r['status'] for r in report['items']], ['refresh_pending'] * 3)
-        self.server.run_jobs()
-        report = repair(self.source, self.config, True, 'filename')
+        # Only the PUTs and the pre-edit checks: no polling GETs after the last PUT.
+        last_put = max(i for i, (m, _) in enumerate(self.server.calls) if m == 'PUT')
+        self.assertEqual([m for m, _ in self.server.calls[last_put + 1:]], [])
+        # Immich's storage template moves the file afterwards; the run is unaffected.
+        moved = self.root / 'moved'
+        moved.mkdir()
+        for name in TRIO:
+            (self.source / name).rename(moved / name)
+        report = repair(moved, self.config, True, 'filename')
         self.assertEqual(report['exitCode'], 0, report['errors'])
         self.assertEqual([r['status'] for r in report['items']], ['already_correct'] * 3)
         self.assertEqual(len(self.server.date_updates), 3)
@@ -136,7 +136,7 @@ class RepairTest(Workspace):
         self.seed(['DJI_20260908182440_0001_D.JPG', 'DJI_20260908182440_0001_D.DNG'])
         report = repair(self.source, self.config, True, 'filename')
         self.assertEqual(report['exitCode'], 0, report['errors'])
-        self.assertEqual([r['status'] for r in report['items']], ['updated_dates_verified'] * 2)
+        self.assertEqual([r['status'] for r in report['items']], ['updated'] * 2)
         self.assertTrue(all(r['target'] == '2026-09-08T18:24:40-07:00' for r in report['items']))
         self.assertEqual(len(self.server.date_updates), 2)
         self.assertEqual({a['info']['type'] for a in self.server.assets.values()}, {'IMAGE'})

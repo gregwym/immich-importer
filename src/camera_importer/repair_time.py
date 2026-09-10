@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from . import __version__, hashcache
 from .api import Immich
-from .capture_time import TIME_TAGS, choose, exif_matches, filename_date, local_matches, time_matches
+from .capture_time import TIME_TAGS, choose, exif_matches, filename_date
 from .config import authenticate, load_config
 from .files import atomic_json, changed, hashes, locked, validate_roots
 from .metadata import probe, probe_batch
@@ -179,13 +179,7 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
                 row.update(status='same_asset', duplicateOf=previous['path'])
             else:
                 seen[item.asset_id] = row
-                if time_matches(item, info):
-                    row['status'] = 'already_correct'
-                elif exif_matches(item, info):
-                    # Date already edited; Immich's SidecarWrite -> metadata job has not refreshed localDateTime yet.
-                    row['status'] = 'refresh_pending'
-                else:
-                    row['status'] = 'would_update'
+                row['status'] = 'already_correct' if exif_matches(item, info) else 'would_update'
         except (ImportFailure, OSError, ValueError) as error:
             row.update(status='failed', error=str(error))
     report['errors'].extend(r['path'] + ': ' + r['error'] for r in report['items'] if r.get('error'))
@@ -198,9 +192,10 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
     journal = config.manifest_root / 'time-repairs' / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid4().hex + '.json')
     report.update(auditReport=str(journal), result='IN PROGRESS', exitCode=1)
     atomic_json(journal, report)  # Write before any date mutation, including old values.
-    # Phase 1: one PUT per asset. Immich stores dateTimeOriginal and timeZone
-    # synchronously (locked columns) and queues SidecarWrite; SidecarWrite then
-    # queues AssetExtractMetadata, which is what refreshes localDateTime.
+    # One PUT per asset is the whole repair: Immich stores dateTimeOriginal and
+    # timeZone synchronously and locks them. Everything after that is Immich's
+    # own asynchronous work (SidecarWrite, metadata refresh of localDateTime and,
+    # with a date-based storage template, moving the file to its new folder).
     for item, row in pairs:
         if row['status'] != 'would_update':
             continue
@@ -214,62 +209,21 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
             row['status'] = 'updating'
             atomic_json(journal, report)
             log('Set date: ' + item.relative)
-            api.request('PUT', '/assets/' + item.asset_id, json={'dateTimeOriginal': item.capture_time})
+            response = api.request('PUT', '/assets/' + item.asset_id, json={'dateTimeOriginal': item.capture_time})
             row['xmpWrite'] = 'queued_by_immich_not_independently_verified'
-            info = api.info(item.asset_id)
-            api.validate_identity(item, info)
-            row['after'] = dates(info)
-            if unaffected(info) != row['preserved']:
-                raise ImportFailure('Non-date metadata changed during repair')
-            if not exif_matches(item, info):
-                raise ImportFailure('Server did not store the requested dateTimeOriginal/timeZone: ' + json.dumps(row['after']))
-            row['status'] = 'dates_set'
+            if isinstance(response, dict) and response.get('exifInfo') is not None:
+                # The response carries the stored fields; no extra request or polling.
+                row['after'] = dates(response)
+                if not exif_matches(item, response):
+                    raise ImportFailure('Server did not store the requested dateTimeOriginal/timeZone: ' + json.dumps(row['after']))
+            row['status'] = 'updated'
         except (ImportFailure, OSError, ValueError) as error:
             row.update(status='failed', error=str(error))
             report['errors'].append(item.relative + ': ' + str(error))
         atomic_json(journal, report)
-    # Phase 2: wait once for every asset's asynchronous localDateTime refresh.
-    waiting = [(i, r) for i, r in pairs if r['status'] in ('dates_set', 'refresh_pending')]
-    deadline = time.monotonic() + config.verify_timeout
-    while waiting:
-        log('Waiting for Immich metadata refresh: ' + str(len(waiting)) + ' asset(s)')
-        for item, row in list(waiting):
-            try:
-                info = api.info(item.asset_id)
-                api.validate_identity(item, info)
-                if unaffected(info) != row['preserved']:
-                    raise ImportFailure('Non-date metadata changed during repair')
-                row['after'] = dates(info)
-                if not exif_matches(item, info):
-                    raise ImportFailure('Date fields changed again after the edit; rerun to review')
-                if local_matches(item, info):
-                    row['status'] = 'updated_dates_verified'
-                    waiting.remove((item, row))
-            except (ImportFailure, OSError, ValueError) as error:
-                row.update(status='failed', error=str(error))
-                report['errors'].append(item.relative + ': ' + str(error))
-                waiting.remove((item, row))
-        atomic_json(journal, report)
-        if not waiting:
-            break
-        if time.monotonic() >= deadline:
-            for item, row in waiting:
-                row['status'] = 'dates_set_local_time_pending'
-            report['warnings'].append(str(len(waiting)) + ' asset(s): dateTimeOriginal/timeZone are set and locked; the timeline position '
-                                      '(localDateTime) refreshes when Immich finishes SidecarWrite and the follow-up metadata job. '
-                                      'Rerun later to verify.')
-            break
-        time.sleep(min(config.poll_interval, max(0, deadline - time.monotonic())))
-    for item, row in pairs:
-        if changed(item.path, item.fingerprint):
-            report['errors'].append('Source changed: ' + item.relative)
-    pending = sum(1 for _, r in pairs if r['status'] == 'dates_set_local_time_pending')
-    if report['errors']:
-        report['result'] = 'REPAIR INCOMPLETE'
-    elif pending:
-        report['result'] = 'DATES SET; TIMELINE REFRESH PENDING FOR ' + str(pending)
-    else:
-        report['result'] = 'DATES VERIFIED; XMP WRITE ASYNCHRONOUS'
+    # No source re-check: Immich may already be moving edited files to their new
+    # date folder under the storage template.
+    report['result'] = 'DATES UPDATED; XMP WRITE AND FILE MOVE ARE ASYNCHRONOUS' if not report['errors'] else 'REPAIR INCOMPLETE'
     report['exitCode'] = 1 if report['errors'] else 0
     atomic_json(journal, report)
     return report

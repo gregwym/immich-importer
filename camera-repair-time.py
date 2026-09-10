@@ -2761,8 +2761,7 @@ SOURCES = [('__init__',
   '\n'
   'from . import __version__, hashcache\n'
   'from .api import Immich\n'
-  'from .capture_time import TIME_TAGS, choose, exif_matches, filename_date, local_matches, '
-  'time_matches\n'
+  'from .capture_time import TIME_TAGS, choose, exif_matches, filename_date\n'
   'from .config import authenticate, load_config\n'
   'from .files import atomic_json, changed, hashes, locked, validate_roots\n'
   'from .metadata import probe, probe_batch\n'
@@ -2949,14 +2948,8 @@ SOURCES = [('__init__',
   "                row.update(status='same_asset', duplicateOf=previous['path'])\n"
   '            else:\n'
   '                seen[item.asset_id] = row\n'
-  '                if time_matches(item, info):\n'
-  "                    row['status'] = 'already_correct'\n"
-  '                elif exif_matches(item, info):\n'
-  "                    # Date already edited; Immich's SidecarWrite -> metadata job has not "
-  'refreshed localDateTime yet.\n'
-  "                    row['status'] = 'refresh_pending'\n"
-  '                else:\n'
-  "                    row['status'] = 'would_update'\n"
+  "                row['status'] = 'already_correct' if exif_matches(item, info) else "
+  "'would_update'\n"
   '        except (ImportFailure, OSError, ValueError) as error:\n'
   "            row.update(status='failed', error=str(error))\n"
   "    report['errors'].extend(r['path'] + ': ' + r['error'] for r in report['items'] if "
@@ -2971,9 +2964,10 @@ SOURCES = [('__init__',
   "(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid4().hex + '.json')\n"
   "    report.update(auditReport=str(journal), result='IN PROGRESS', exitCode=1)\n"
   '    atomic_json(journal, report)  # Write before any date mutation, including old values.\n'
-  '    # Phase 1: one PUT per asset. Immich stores dateTimeOriginal and timeZone\n'
-  '    # synchronously (locked columns) and queues SidecarWrite; SidecarWrite then\n'
-  '    # queues AssetExtractMetadata, which is what refreshes localDateTime.\n'
+  '    # One PUT per asset is the whole repair: Immich stores dateTimeOriginal and\n'
+  "    # timeZone synchronously and locks them. Everything after that is Immich's\n"
+  '    # own asynchronous work (SidecarWrite, metadata refresh of localDateTime and,\n'
+  '    # with a date-based storage template, moving the file to its new folder).\n'
   '    for item, row in pairs:\n'
   "        if row['status'] != 'would_update':\n"
   '            continue\n'
@@ -2987,67 +2981,24 @@ SOURCES = [('__init__',
   "            row['status'] = 'updating'\n"
   '            atomic_json(journal, report)\n'
   "            log('Set date: ' + item.relative)\n"
-  "            api.request('PUT', '/assets/' + item.asset_id, json={'dateTimeOriginal': "
+  "            response = api.request('PUT', '/assets/' + item.asset_id, json={'dateTimeOriginal': "
   'item.capture_time})\n'
   "            row['xmpWrite'] = 'queued_by_immich_not_independently_verified'\n"
-  '            info = api.info(item.asset_id)\n'
-  '            api.validate_identity(item, info)\n'
-  "            row['after'] = dates(info)\n"
-  "            if unaffected(info) != row['preserved']:\n"
-  "                raise ImportFailure('Non-date metadata changed during repair')\n"
-  '            if not exif_matches(item, info):\n'
-  "                raise ImportFailure('Server did not store the requested "
+  "            if isinstance(response, dict) and response.get('exifInfo') is not None:\n"
+  '                # The response carries the stored fields; no extra request or polling.\n'
+  "                row['after'] = dates(response)\n"
+  '                if not exif_matches(item, response):\n'
+  "                    raise ImportFailure('Server did not store the requested "
   "dateTimeOriginal/timeZone: ' + json.dumps(row['after']))\n"
-  "            row['status'] = 'dates_set'\n"
+  "            row['status'] = 'updated'\n"
   '        except (ImportFailure, OSError, ValueError) as error:\n'
   "            row.update(status='failed', error=str(error))\n"
   "            report['errors'].append(item.relative + ': ' + str(error))\n"
   '        atomic_json(journal, report)\n'
-  "    # Phase 2: wait once for every asset's asynchronous localDateTime refresh.\n"
-  "    waiting = [(i, r) for i, r in pairs if r['status'] in ('dates_set', 'refresh_pending')]\n"
-  '    deadline = time.monotonic() + config.verify_timeout\n'
-  '    while waiting:\n'
-  "        log('Waiting for Immich metadata refresh: ' + str(len(waiting)) + ' asset(s)')\n"
-  '        for item, row in list(waiting):\n'
-  '            try:\n'
-  '                info = api.info(item.asset_id)\n'
-  '                api.validate_identity(item, info)\n'
-  "                if unaffected(info) != row['preserved']:\n"
-  "                    raise ImportFailure('Non-date metadata changed during repair')\n"
-  "                row['after'] = dates(info)\n"
-  '                if not exif_matches(item, info):\n'
-  "                    raise ImportFailure('Date fields changed again after the edit; rerun to "
-  "review')\n"
-  '                if local_matches(item, info):\n'
-  "                    row['status'] = 'updated_dates_verified'\n"
-  '                    waiting.remove((item, row))\n'
-  '            except (ImportFailure, OSError, ValueError) as error:\n'
-  "                row.update(status='failed', error=str(error))\n"
-  "                report['errors'].append(item.relative + ': ' + str(error))\n"
-  '                waiting.remove((item, row))\n'
-  '        atomic_json(journal, report)\n'
-  '        if not waiting:\n'
-  '            break\n'
-  '        if time.monotonic() >= deadline:\n'
-  '            for item, row in waiting:\n'
-  "                row['status'] = 'dates_set_local_time_pending'\n"
-  "            report['warnings'].append(str(len(waiting)) + ' asset(s): dateTimeOriginal/timeZone "
-  "are set and locked; the timeline position '\n"
-  "                                      '(localDateTime) refreshes when Immich finishes "
-  "SidecarWrite and the follow-up metadata job. '\n"
-  "                                      'Rerun later to verify.')\n"
-  '            break\n'
-  '        time.sleep(min(config.poll_interval, max(0, deadline - time.monotonic())))\n'
-  '    for item, row in pairs:\n'
-  '        if changed(item.path, item.fingerprint):\n'
-  "            report['errors'].append('Source changed: ' + item.relative)\n"
-  "    pending = sum(1 for _, r in pairs if r['status'] == 'dates_set_local_time_pending')\n"
-  "    if report['errors']:\n"
-  "        report['result'] = 'REPAIR INCOMPLETE'\n"
-  '    elif pending:\n'
-  "        report['result'] = 'DATES SET; TIMELINE REFRESH PENDING FOR ' + str(pending)\n"
-  '    else:\n'
-  "        report['result'] = 'DATES VERIFIED; XMP WRITE ASYNCHRONOUS'\n"
+  '    # No source re-check: Immich may already be moving edited files to their new\n'
+  '    # date folder under the storage template.\n'
+  "    report['result'] = 'DATES UPDATED; XMP WRITE AND FILE MOVE ARE ASYNCHRONOUS' if not "
+  "report['errors'] else 'REPAIR INCOMPLETE'\n"
   "    report['exitCode'] = 1 if report['errors'] else 0\n"
   '    atomic_json(journal, report)\n'
   '    return report\n'
