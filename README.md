@@ -207,8 +207,11 @@ camera-import --capture-timezone America/Los_Angeles --dry-run /some/folder
 camera-import --capture-timezone America/Los_Angeles /some/folder
 ```
 
-也支持环境变量 `CAMERA_CAPTURE_TIMEZONE` 或 config JSON 的 `capture_timezone`。
+不需要每次在命令行指定：把常驻拍摄地写进 config JSON 的 `capture_timezone`（或环境变量 `CAMERA_CAPTURE_TIMEZONE`），
+`camera-import` 和 `camera-repair-time` 都会读取；只有在别处拍摄的目录才需要用 `--capture-timezone` 覆盖。
+优先级仍是命令行 > 环境变量 > config。带时区 metadata 的文件不受此影响，配置值只用于文件名钟点。
 默认不猜时区；这意味着缺少带时区 metadata 的视频在未配置时区时会报 NEEDS REVIEW，不上传。
+Pocket 3 和 ONE RS 的视频都只写本地钟点，没有时区字段，所以实际上总会用到这个配置。
 IANA 时区依据**拍摄日期**处理夏令时。DSM 既没有 `/usr/share/zoneinfo` 数据库，其 Python 3.8 也没有编译 `time.tzset`，
 因此夏令时计算完全用纯 Python 的 POSIX TZ 规则求值器完成，不依赖 libc 和 pip。规则来源依次为：系统 zoneinfo 文件的 footer
 （存在时，`TZDIR` 可指定目录）、脚本内置的约 500 个 IANA 时区当前规则表（取自 tzdata 的 TZif footer）、或直接给出的
@@ -247,6 +250,7 @@ camera-import --check-config --companion-root /volume1/immich/companions --manif
   "immich_bin": "immich",
   "exiftool_bin": "exiftool",
   "expected_user_name": "Camera Archive",
+  "capture_timezone": "America/Los_Angeles",
   "verify_timeout": 180,
   "poll_interval": 2,
   "request_timeout": 300

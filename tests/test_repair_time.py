@@ -39,9 +39,12 @@ class RepairTest(Workspace):
         self.seed()
         before = {p.name: p.read_bytes() for p in self.source.iterdir()}
         stacks = dict(self.server.stacks)
-        report = repair(self.source, self.config, time_source='filename')
+        # Hashes come from the index the import left behind: originals are not re-read.
+        with patch('camera_importer.repair_time.hashes', side_effect=AssertionError('no re-hash expected')):
+            report = repair(self.source, self.config, time_source='filename')
         self.assertEqual(report['exitCode'], 0, report['errors'])
         self.assertEqual([r['status'] for r in report['items']], ['would_update'] * 3)
+        self.assertEqual([r['hashSource'] for r in report['items']], ['index'] * 3)
         self.assertFalse(self.server.date_updates)
         self.assertFalse((self.config.manifest_root / 'time-repairs').exists())
         report = repair(self.source, self.config, True, 'filename')

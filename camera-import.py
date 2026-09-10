@@ -2725,11 +2725,11 @@ SOURCES = [('__init__',
   'from pathlib import Path\n'
   'from uuid import uuid4\n'
   '\n'
-  'from . import __version__\n'
+  'from . import __version__, hashcache\n'
   'from .api import Immich\n'
   'from .capture_time import TIME_TAGS, choose, time_matches\n'
   'from .config import authenticate, load_config\n'
-  'from .files import atomic_json, changed, hashes, validate_roots\n'
+  'from .files import atomic_json, changed, hashes, locked, validate_roots\n'
   'from .metadata import probe, probe_batch\n'
   'from .model import ImportFailure\n'
   'from .scan import scan\n'
@@ -2811,20 +2811,35 @@ SOURCES = [('__init__',
   "                raise ImportFailure('Source changed during metadata read')\n"
   '        except (ImportFailure, OSError, ValueError) as error:\n'
   "            row.update(status='failed', error=str(error))\n"
-  '    for members in groups.values():\n'
+  '    now = datetime.now(timezone.utc)\n'
+  '    with locked(config.manifest_root):\n'
+  '        index = hashcache.load(config.manifest_root)\n'
+  '        for members in groups.values():\n'
+  '            try:\n'
+  "                if any(row['status'] == 'failed' for _, row in members):\n"
+  "                    raise ImportFailure('Bundle member cannot be reviewed')\n"
+  '                value, origin = choose([i for i, _ in members], config.capture_timezone)\n'
+  '                for item, row in members:\n'
+  '                    item.capture_time = value.isoformat()\n'
+  '                    row.update(target=item.capture_time, timeSource=origin)\n'
+  '                    cached = hashcache.lookup(index, item)\n'
+  '                    if cached:\n'
+  '                        item.sha1, item.sha256 = cached\n'
+  "                        item.hash_source = 'index'\n"
+  '                    else:\n'
+  "                        log('Hash original: ' + item.relative)\n"
+  '                        item.sha1, item.sha256 = hashes(item.path, item.fingerprint)\n'
+  "                        item.hash_source = 'read'\n"
+  '                        hashcache.record(index, item, now)\n'
+  '                    row.update(sha1=item.sha1, sha256=item.sha256, '
+  'hashSource=item.hash_source)\n'
+  '            except (ImportFailure, OSError, ValueError) as error:\n'
+  '                for _, row in members:\n'
+  "                    row.update(status='failed', error=str(error))\n"
   '        try:\n'
-  "            if any(row['status'] == 'failed' for _, row in members):\n"
-  "                raise ImportFailure('Bundle member cannot be reviewed')\n"
-  '            value, origin = choose([i for i, _ in members], config.capture_timezone)\n'
-  '            for item, row in members:\n'
-  '                item.capture_time = value.isoformat()\n'
-  '                row.update(target=item.capture_time, timeSource=origin)\n'
-  "                log('Hash original: ' + item.relative)\n"
-  '                item.sha1, item.sha256 = hashes(item.path, item.fingerprint)\n'
-  '                row.update(sha1=item.sha1, sha256=item.sha256)\n'
-  '        except (ImportFailure, OSError, ValueError) as error:\n'
-  '            for _, row in members:\n'
-  "                row.update(status='failed', error=str(error))\n"
+  '            hashcache.save(config.manifest_root, index, now)\n'
+  '        except (OSError, ImportFailure):\n'
+  "            report['errors'].append('Failed to persist hash index')\n"
   '    authenticate(config)\n'
   '    api = Immich(config, log)\n'
   '    api.preflight()\n'
