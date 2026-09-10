@@ -101,22 +101,20 @@ class RepairTest(Workspace):
         self.assertEqual([r['hashSource'] for r in report['items']], ['name+size'])
         self.assertEqual(report['items'][0]['assetId'], next(iter(self.server.assets)))
 
-    def test_clock_anchor_and_only_filter(self):
+    def test_clock_shift_and_only_filter(self):
         self.seed(TRIO + ['DJI_20260908182440_0001_D.MP4'])
-        # Camera said 2026-01-27 17:07:25; the 710 s clip really ended 2026-09-05 17:54:00 local.
-        with patch('camera_importer.repair_time.probe', return_value={'Duration': 710.0}):
-            report = repair(self.source, self.config, time_source='filename',
-                            clock_anchor='LRV_20260127_170725_11_052.insv=2026-09-05T17:54:00', only='*_052.insv')
+        self.config.clock_shift = '221d00:34:12'
+        report = repair(self.source, self.config, time_source='filename', only=['*_052.insv'])
         self.assertEqual(report['exitCode'], 0, report['errors'])
-        self.assertEqual(report['clockShift'], '+221d00:34:45')
+        self.assertEqual(report['clockShift'], '+221d00:34:12')
+        self.assertEqual(report['only'], ['*_052.insv'])
         self.assertEqual(len(report['items']), 3)
-        self.assertTrue(all(r['target'] == '2026-09-05T17:42:10-07:00' for r in report['items']), report['items'])
-        with patch('camera_importer.repair_time.probe', return_value={'Duration': 710.0}):
-            report = repair(self.source, self.config, time_source='filename',
-                            clock_anchor='LRV_20260127_170725_11_052.insv=2026-09-05T17:42:10', anchor_at='start', only='*_052.insv')
-        self.assertEqual(report['clockShift'], '+221d00:34:45')
-        with self.assertRaises(Exception):
-            repair(self.source, self.config, time_source='filename', clock_anchor='nope.insv=2026-09-05T17:54:00')
+        self.assertTrue(all(r['target'] == '2026-09-05T17:41:37-07:00' for r in report['items']), report['items'])
+        self.assertTrue(all('clock shifted +221d00:34:12' in r['timeSource'] for r in report['items']))
+        report = repair(self.source, self.config, time_source='filename', only=['*.insv', 'DJI_2026*'])
+        self.assertEqual(len(report['items']), 4)
+        report = repair(self.source, self.config, time_source='filename', only=['*.INSV'])
+        self.assertEqual(report['exitCode'], 1)  # case-sensitive, like the shell
 
     def test_missing_asset_aborts_all_changes(self):
         self.seed()

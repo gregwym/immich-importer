@@ -1350,8 +1350,8 @@ SOURCES = [('__init__',
   'PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".dng", ".insp")\n'
   'TAGS = ["-Make", "-Model", "-LensID", "-LensType", "-LensSpec", "-LensModel", "-Lens", '
   '"-FileType",\n'
-  '        "-NumberOfImages", "-ProjectionType", "-Duration#", "-Error", "-Warning"] + ["-" + tag '
-  'for tag in TIME_TAGS]\n'
+  '        "-NumberOfImages", "-ProjectionType", "-Error", "-Warning"] + ["-" + tag for tag in '
+  'TIME_TAGS]\n'
   'BATCH = 50\n'
   '\n'
   '\n'
@@ -2853,14 +2853,14 @@ SOURCES = [('__init__',
   'import json\n'
   'import sys\n'
   'import time\n'
-  'from datetime import datetime, timedelta, timezone\n'
+  'from datetime import datetime, timezone\n'
   'from pathlib import Path\n'
   'from uuid import uuid4\n'
   '\n'
   'from . import __version__, hashcache\n'
   'from .api import Immich\n'
   'from .capture_time import TIME_TAGS, choose, datable, describe_shift, exif_matches, '
-  'filename_date, parse_date, parse_shift\n'
+  'parse_shift\n'
   'from .config import authenticate, load_config\n'
   'from .files import atomic_json, changed, hashes, locked, validate_roots\n'
   'from .metadata import probe, probe_batch\n'
@@ -2885,13 +2885,9 @@ SOURCES = [('__init__',
   "America/Los_Angeles')\n"
   "    p.add_argument('--clock-shift', help='Camera clock was wrong by this amount: 221d00:34:12, "
   "-1h30m, P221DT34M12S')\n"
-  "    p.add_argument('--clock-anchor', metavar='FILE=YYYY-MM-DDTHH:MM:SS',\n"
-  "                   help='Derive the clock shift: this file really started/ended at this local "
-  "wall time (see --anchor-at)')\n"
-  "    p.add_argument('--anchor-at', choices=('end', 'start'), default='end', help='Whether "
-  "--clock-anchor gives the end (default) or start time')\n"
-  "    p.add_argument('--only', metavar='GLOB', help='Limit to file names matching this pattern, "
-  'e.g. "VID_202601*"\')\n'
+  "    p.add_argument('--only', metavar='GLOB', action='append',\n"
+  "                   help='Only file names matching this shell-style pattern (*, ?, [..]); "
+  'repeatable, e.g. --only "*.insv" --only "DJI_202601*"\')\n'
   "    p.add_argument('--match', choices=('auto', 'checksum'), default='auto',\n"
   "                   help='auto: hash index, then a unique Immich asset with the same file name "
   "and size, then hashing; checksum: always hash')\n"
@@ -2943,30 +2939,8 @@ SOURCES = [('__init__',
   '    return asset, checksum\n'
   '\n'
   '\n'
-  'def anchor_shift(media, anchor, anchor_at, executable):\n'
-  '    """Clock shift from one file whose true local start/end time is known."""\n'
-  "    name, _, when = anchor.partition('=')\n"
-  '    actual = parse_date(when.strip())\n'
-  '    if not name or actual is None or actual.tzinfo is not None:\n'
-  "        raise ImportFailure('--clock-anchor expects FILE=YYYY-MM-DDTHH:MM:SS (local wall time, "
-  "no offset)')\n"
-  '    item = next((i for i in media if i.path.name.casefold() == '
-  'Path(name.strip()).name.casefold()), None)\n'
-  '    if item is None:\n'
-  "        raise ImportFailure('--clock-anchor file is not among the scanned camera files: ' + "
-  'name)\n'
-  '    camera = filename_date(item)\n'
-  "    if anchor_at == 'end':\n"
-  "        duration = probe(item.path, executable).get('Duration')\n"
-  '        if not isinstance(duration, (int, float)) or duration <= 0:\n'
-  "            raise ImportFailure('Cannot read the duration of the anchor file; use --anchor-at "
-  "start or --clock-shift')\n"
-  '        camera = camera + timedelta(seconds=float(duration))\n'
-  '    return actual - camera\n'
-  '\n'
-  '\n'
-  "def repair(source, config, apply=False, time_source='auto', log=lambda s: None, match='auto',\n"
-  "           clock_anchor=None, anchor_at='end', only=None):\n"
+  "def repair(source, config, apply=False, time_source='auto', log=lambda s: None, match='auto', "
+  'only=None):\n'
   '    validate_roots(source, config.companion_root, config.manifest_root)\n'
   '    plan = scan(source)\n'
   "    report = {'source': str(source), 'apply': apply, 'timeSource': time_source, 'match': "
@@ -2977,17 +2951,15 @@ SOURCES = [('__init__',
   "completion receipt'}\n"
   "    report['errors'].extend('UNKNOWN FILE: ' + i.relative for i in plan.unknown)\n"
   '    # Same selection and date rule as the importer (capture_time.datable / choose).\n'
-  '    media = [i for i in plan.items if datable(i) and (not only or fnmatch.fnmatch(i.path.name, '
-  'only))]\n'
+  '    patterns = [only] if isinstance(only, str) else list(only or [])\n'
+  '    media = [i for i in plan.items if datable(i) and (not patterns or '
+  'any(fnmatch.fnmatchcase(i.path.name, g) for g in patterns))]\n'
   '    if not media:\n'
   "        report['errors'].append('No recognized camera photos or videos in source' + (' matching "
-  "' + only if only else ''))\n"
+  "' + ', '.join(patterns) if patterns else ''))\n"
   "    report['warnings'] = []\n"
+  "    report['only'] = patterns\n"
   '    shift = parse_shift(config.clock_shift)\n'
-  '    if clock_anchor:\n'
-  '        if shift:\n'
-  "            raise ImportFailure('Use either --clock-shift or --clock-anchor, not both')\n"
-  '        shift = anchor_shift(media, clock_anchor, anchor_at, config.exiftool_bin)\n'
   "    report['clockShift'] = describe_shift(shift) if shift else None\n"
   '    if shift:\n'
   "        log('Camera clock shift: ' + report['clockShift'])\n"
@@ -3153,7 +3125,7 @@ SOURCES = [('__init__',
   '        if not source.is_dir():\n'
   "            raise ImportFailure('Source must be a directory')\n"
   '        report = repair(source, config, args.apply, args.time_source, log, args.match, '
-  'args.clock_anchor, args.anchor_at, args.only)\n'
+  'args.only)\n'
   '    except (ImportFailure, OSError, ValueError) as error:\n'
   "        report = {'result': 'REPAIR INCOMPLETE', 'exitCode': 1, 'errors': [str(error)], "
   "'items': []}\n"
