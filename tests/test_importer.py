@@ -859,6 +859,30 @@ class IntegrationTest(Workspace):
         self.assertEqual(report["exitCode"], 1)
         self.assertEqual(len(self.server.uploads), 1)
 
+    def test_interrupted_run_keeps_hashes_already_computed(self):
+        self.put("DJI_20251226075842_0001_D.MP4", b"a" * 2000000)
+        self.put("DJI_20251226075843_0002_D.MP4", b"b" * 2000000)
+        self.put("DJI_20251226075844_0003_D.MP4", b"c" * 2000000)
+        real = Immich.verify_identity
+        calls = []
+
+        def interrupt_on_second(api, item):
+            calls.append(item.relative)
+            if len(calls) == 2:
+                raise KeyboardInterrupt()  # Ctrl-C in the middle of the run
+            return real(api, item)
+        with patch.object(Immich, "verify_identity", interrupt_on_second):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_import()
+        index = json.loads((self.config.manifest_root / "hashes.json").read_text())["entries"]
+        self.assertEqual(len(index), 2)  # both streamed files, saved before the interrupt propagated
+        self.assertEqual(len(self.server.uploads), 2)
+        with patch("camera_importer.runner.hashes", side_effect=AssertionError("no read expected")):
+            report = self.run_import()
+        self.assertEqual(report["exitCode"], 0, report["errors"])
+        self.assertEqual(report["hashSources"], {"index": 2, "upload": 1})
+        self.assertEqual(len(self.server.uploads), 3)
+
     def test_hash_index_skips_reads_on_rerun_and_survives_dropped_response(self):
         self.put("DJI_20251226075842_0001_D.MP4", b"m" * 3000000)
         self.put("DJI_20251226075842_0001_D.WAV", b"w" * 20000)

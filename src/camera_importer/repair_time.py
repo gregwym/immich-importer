@@ -162,13 +162,14 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
                     item.sha1, item.sha256 = hashes(item.path, item.fingerprint)
                     item.hash_source = 'read'
                     hashcache.record(index, item, now)
+                    try:
+                        hashcache.save(config.manifest_root, index, now)  # survive an interrupted run
+                    except (OSError, ImportFailure):
+                        if 'Failed to persist hash index' not in report['errors']:
+                            report['errors'].append('Failed to persist hash index')
                 row.update(sha1=item.sha1, sha256=item.sha256 or None, hashSource=item.hash_source)
             except (ImportFailure, OSError, ValueError) as error:
                 row.update(status='failed', error=str(error))
-        try:
-            hashcache.save(config.manifest_root, index, now)
-        except (OSError, ImportFailure):
-            report['errors'].append('Failed to persist hash index')
     eligible = [(i, r) for i, r in pairs if r['status'] == 'planned']
     matches = api.check([i for i, _ in eligible if not i.asset_id])
     seen = {}

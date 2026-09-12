@@ -210,6 +210,17 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
             stack.enter_context(locked(config.companion_root))
             now = datetime.now(timezone.utc)
             index = hashcache.load(config.manifest_root)
+            persisted = {"failed": False}
+
+            def persist():
+                # After every newly computed hash, so an interrupted or killed run
+                # (Ctrl-C, lost SSH session) still leaves its work for the rerun.
+                try:
+                    hashcache.save(config.manifest_root, index, now)
+                except (OSError, ImportFailure):
+                    if not persisted["failed"]:
+                        persisted["failed"] = True
+                        plan.errors.append("Failed to persist hash index")
             previous = {}
             for key in plan.bundles:
                 try:
@@ -238,6 +249,8 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                 try:
                     item.sha1, item.sha256 = hashes(item.path, item.fingerprint)
                     item.hash_source = "read"
+                    hashcache.record(index, item, now)
+                    persist()
                 except (OSError, ImportFailure) as error:
                     fail(item, error)
             for item in plan.assets:
@@ -277,6 +290,8 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                         item.status = archive_wav(item, config.companion_root)
                         item.verified = True
                         log(item.relative + ": " + item.status)
+                        hashcache.record(index, item, now)
+                        persist()
                     except (OSError, ImportFailure) as error:
                         fail(item, error)
             pending = [i for i in plan.assets if not i.error]
@@ -314,17 +329,16 @@ def execute(source, config, dry_run=False, strict=False, metadata_verify=True,
                     fail(item, error)
                 finally:
                     # Whatever the outcome, the hash is a fact about the bytes.
-                    hashcache.record(index, item, now)
+                    if item.hash_source in ("upload", "read") and item.sha256:
+                        hashcache.record(index, item, now)
+                        persist()
             identity_checks()
             if metadata_verify:
                 api.verify_metadata([i for i in pending if i.identity_verified and not i.error], progress)
             for item in plan.items:
                 if item.route == "companion":
                     hashcache.record(index, item, now)
-            try:
-                hashcache.save(config.manifest_root, index, now)
-            except (OSError, ImportFailure):
-                plan.errors.append("Failed to persist hash index")
+            persist()
             for key, members in plan.stacks.items():
                 # Stacking needs verified asset identities, not finished metadata
                 # extraction: a slow extraction queue must not leave a bundle unstacked.
