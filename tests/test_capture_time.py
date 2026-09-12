@@ -131,16 +131,27 @@ class CaptureTimeTest(unittest.TestCase):
         # so the real local time is 19:14:18 PDT, an hour after the filename clock.
         value, source = choose([video('2024:03:16 02:14:19')], 'America/Los_Angeles')
         self.assertEqual(value.isoformat(), '2024-03-15T19:14:18-07:00')
-        self.assertIn('not adjusted for DST', source)
+        self.assertIn('camera clock showed -08:00', source)
         value, _ = choose([video('2024:03:16 02:14:19')], '-07:00')
-        self.assertEqual(value.isoformat(), '2024-03-15T18:14:18-08:00')  # fixed offset: no standard/DST notion
+        self.assertEqual(value.isoformat(), '2024-03-15T19:14:18-07:00')
         # Same file without a configured zone: the file's own offset is all there is.
         value, source = choose([video('2024:03:16 02:14:19')], '')
         self.assertEqual((value.isoformat(), source), ('2024-03-15T18:14:18-08:00', 'metadata:utc-vs-filename'))
-        # A genuinely different offset (shot in Tokyo) beats the configured home zone.
-        value, source = choose([video('2024:03:15 09:14:18')], 'America/Los_Angeles')
-        self.assertEqual(value.isoformat(), '2024-03-15T18:14:18+09:00')
-        self.assertIn('differs from configured timezone', source)
+        # Shot in Tokyo with the camera still on Los Angeles time: filename 17:00:09 PDT,
+        # CreateDate 00:00:10Z. The configured zone gives the true local time, 09:00 JST.
+        japan = video('2025:08:25 00:00:10', 'DJI_20250824170009_0001_D.MP4')
+        value, source = choose([japan], 'Asia/Tokyo')
+        self.assertEqual(value.isoformat(), '2025-08-25T09:00:09+09:00')
+        self.assertIn('camera clock showed -07:00', source)
+        # Forgetting to override the home zone keeps the same instant, shown in home time.
+        value, source = choose([japan], 'America/Los_Angeles')
+        self.assertEqual((value.isoformat(), source), ('2025-08-24T17:00:09-07:00', 'metadata:utc-vs-filename'))
+        # A camera without a UTC clock needs to be told what its clock was showing.
+        insta = video('2025:08:24 17:00:00', 'VID_20250824_170009_00_001.mp4')  # local time in the UTC field: no evidence
+        value, source = choose([insta], 'Asia/Tokyo', None, 'America/Los_Angeles')
+        self.assertEqual((value.isoformat(), source), ('2025-08-25T09:00:09+09:00', 'filename in clock timezone + configured timezone'))
+        value, source = choose([insta], '', None, 'America/Los_Angeles')
+        self.assertEqual((value.isoformat(), source), ('2025-08-24T17:00:09-07:00', 'filename in clock timezone'))
         # Agreement in winter: plain evidence.
         value, source = choose([video('2024:01:16 02:14:19', 'VID_20240115_181418_10_004.mp4')], 'America/Los_Angeles')
         self.assertEqual((value.isoformat(), source), ('2024-01-15T18:14:18-08:00', 'metadata:utc-vs-filename'))

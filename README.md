@@ -233,13 +233,16 @@ MP4 / INSV 使用可靠且带偏移的 `DateTimeOriginal` / `CreationDate`（也
 QuickTime 整数 `CreateDate` / `MediaCreateDate` 的 UTC 语义不能仅凭字段名保证，因此只记录用于诊断，
 不直接当作带时区的拍摄日期。文件系统 mtime / ctime 不用作视频拍摄时间回退。
 
-**文件写下的时间是权威的，导入和修复同一份实现（`capture_time.choose`）。** 按证据强弱依次判断：
+**文件写下的时间是权威的，导入和修复同一份实现（`capture_time.choose`）。** 三个正交的量：① 相机钟读数（文件名或 EXIF 钟点，只有 `--clock-shift` 会改它）；② 相机钟所在时区（优先文件自证，其次 `--clock-timezone`，再次 `--capture-timezone`）；③ 拍摄地时区 `--capture-timezone`（已知时刻后一律换算到它显示，config 里存常驻拍摄地，出国目录用命令行覆盖）。按证据强弱依次判断：
 
 1. 带时区的日期（`DateTimeOriginal` / `SubSecDateTimeOriginal` 配 `OffsetTimeOriginal`，或带时区的 `CreationDate`）：直接采用，导入时不写日期 XMP，由 Immich 自行提取。
 2. 不带时区的 EXIF `DateTimeOriginal`（EXIF 2.31 之前的照片，如 Pocket 3、ONE RS 的 JPG / DNG / INSP）：**原样尊重，不做任何解释**，配置的时区对它无效；修复工具显示 `exif_respected`。Immich 会把它当 UTC 存，墙上时间正确。
 3. 视频的 QuickTime `CreateDate` 是 UTC，与文件名里的本地钟点之差是文件自己证明的时区（取整到 15 分钟、允许几秒抖动、±14 小时内、非零）：按此偏移写入，不需要任何配置。DJI 视频属于这种情况。
-   例外：相机在夏令时开始前和手机对过时、之后显示的钟没有进入夏令时，文件名钟点会滞后 1 小时，而相机内部 UTC（`CreateDate`）仍然正确。配置了拍摄时区且文件偏移恰好等于该时区的标准时偏移时，以文件的 UTC 为准，用配置时区换算出真实当地时间（来源注明 `camera clock not adjusted for DST`）；文件偏移与配置时区完全不同（在外地拍摄）时仍以文件为准。
+   有这种 UTC 证据时，**时刻来自文件，墙上时间由配置的拍摄时区决定**：相机显示的钟没进夏令时、或出国后仍显示家里时间，`CreateDate` 依然正确，配置了当地时区（例如 `--capture-timezone Asia/Tokyo`）就能得到真实当地时间，来源注明 `camera clock showed -07:00`。没配置时按相机显示的偏移展示，时刻同样正确。
 4. 只剩文件名钟点时（相机把本地时间写进了 UTC 字段，或视频没有 `CreateDate`）：用配置的拍摄时区解释；没配置就留给 Immich，不报错，报告 `captureSources` 里计为 `no timezone evidence`，修复工具显示 `no_timezone_evidence`。
+
+**没有 UTC 证据的相机（Insta360 的 `CreateDate` 写的是本地时间）出国拍摄且没改相机时区时**，用 `--clock-timezone` 说明相机的钟显示的是哪个时区，再用 `--capture-timezone` 给出拍摄地：
+`--clock-timezone America/Los_Angeles --capture-timezone Asia/Tokyo` 把文件名的 17:00 理解为洛杉矶时间，再换算成东京当地时间显示。
 
 **唯一会改动文件所写钟点的是显式的 `--clock-shift`**（相机时钟设错）：它加在相机钟点上，对以上四种情况一律生效；不带时区的 EXIF 移位后仍不带时区。
 `--time-source filename` 是另一种显式覆盖：无视 metadata 里的钟点，只按文件名 + 配置时区处理。

@@ -208,15 +208,6 @@ def from_utc(utc, zone):
     return (naive + timedelta(seconds=offset)).replace(tzinfo=timezone(timedelta(seconds=offset)))
 
 
-def standard_offset(zone):
-    """The zone's standard (non-DST) offset, or None for fixed offsets and unknown zones."""
-    rule = posix_rule(zone) if zone and not re.fullmatch(r'[+-]\d{2}:\d{2}', zone) and zone not in ('UTC', 'Z') else None
-    if not rule:
-        return None
-    parsed = PosixZone(rule)
-    return timedelta(seconds=parsed.std) if parsed.dst is not None else None
-
-
 SHIFT = re.compile(r'^([+-])?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$')
 SHIFT_CLOCK = re.compile(r'^([+-])?(?:(\d+)d)?(\d{1,3}):(\d{2})(?::(\d{2}))?$')
 SHIFT_ISO = re.compile(r'^([+-])?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$')
@@ -247,16 +238,20 @@ def describe_shift(shift):
     return sign + str(days) + 'd' + '%02d:%02d:%02d' % (rest // 3600, rest % 3600 // 60, rest % 60)
 
 
-def choose(members, zone, shift=None):
+def choose(members, zone, shift=None, clock_zone=None):
     """Capture instant for one file or 360 bundle: (datetime or None, source).
 
     What the file states is authoritative, in this order: a zoned date; a bare
     EXIF date (respected as written, so None: nothing to deliver); a UTC
-    QuickTime clock whose difference from the filename clock proves the offset;
-    the filename clock interpreted in the configured timezone. A file that
-    states nothing about its timezone and has no configured one is left to
-    Immich (None). `shift` corrects a wrong camera clock and is the only way a
-    stated wall-clock time is ever changed.
+    QuickTime clock, whose difference from the filename clock proves the
+    camera's displayed offset; the filename clock interpreted in `clock_zone`
+    (the zone the camera's clock was set to) or `zone`. Whenever the instant is
+    known, `zone` (where the footage was shot) decides the wall time shown, so
+    a camera that kept its home clock while travelling, or never entered DST,
+    still lands on the true local time. A file that states nothing about its
+    timezone and has no configured one is left to Immich (None). `shift`
+    corrects a wrong camera clock and is the only way a stated wall-clock time
+    is ever changed.
     """
     shift = shift or timedelta(0)
     dates = [explicit_date(i.time_tags) for i in members]
@@ -284,24 +279,29 @@ def choose(members, zone, shift=None):
         return None, 'no camera clock'
     if offsets:
         offset = offsets.pop()
+        stated = (named + shift).replace(tzinfo=timezone(offset))
+        if not zone:
+            return stated, _shifted('metadata:utc-vs-filename', shift)
+        local = from_utc(stated.astimezone(timezone.utc), zone)
+        if local.utcoffset() == offset:
+            return local, _shifted('metadata:utc-vs-filename', shift)
+        # The camera's clock was showing another zone (home time abroad, or no
+        # DST): its UTC is right, the configured zone gives the true wall time.
+        return local, _shifted('metadata:utc + configured timezone (camera clock showed ' + _offset_text(offset) + ')', shift)
+    if clock_zone:
+        shown = localize(named + shift, clock_zone)
         if zone:
-            try:
-                configured = localize(named + shift, zone)
-            except ImportFailure:
-                configured = None
-            if configured is not None and configured.utcoffset() != offset:
-                if offset == standard_offset(zone):
-                    # The camera was synced before DST began and never moved its
-                    # displayed clock: its UTC stayed correct, the filename clock lags
-                    # an hour. Trust the file's UTC and express it in the configured zone.
-                    utc = (named + shift).replace(tzinfo=timezone(offset)).astimezone(timezone.utc)
-                    return from_utc(utc, zone), _shifted('metadata:utc + configured timezone (camera clock not adjusted for DST)', shift)
-                # A genuinely different offset: the file was shot elsewhere; the file wins.
-                return (named + shift).replace(tzinfo=timezone(offset)), _shifted('metadata:utc-vs-filename (differs from configured timezone)', shift)
-        return (named + shift).replace(tzinfo=timezone(offset)), _shifted('metadata:utc-vs-filename', shift)
+            return from_utc(shown.astimezone(timezone.utc), zone), _shifted('filename in clock timezone + configured timezone', shift)
+        return shown, _shifted('filename in clock timezone', shift)
     if zone:
         return localize(named + shift, zone), _shifted('filename + configured timezone', shift)
     return None, 'no timezone evidence'
+
+
+def _offset_text(offset):
+    seconds = int(offset.total_seconds())
+    sign = '+' if seconds >= 0 else '-'
+    return sign + '%02d:%02d' % (abs(seconds) // 3600, abs(seconds) % 3600 // 60)
 
 
 def _shifted(source, shift):

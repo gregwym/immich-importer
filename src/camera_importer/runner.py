@@ -77,7 +77,7 @@ def build_plan(source, config, log, progress=QUIET):
                                 raise ImportFailure("NEEDS REVIEW: source sidecar date lacks explicit timezone")
                             item.time_tags = {"DateTimeOriginal": side[key]}
                             break
-            value, origin = choose(members, config.capture_timezone, parse_shift(config.clock_shift))
+            value, origin = choose(members, config.capture_timezone, parse_shift(config.clock_shift), config.clock_timezone)
             for item in members:
                 item.capture_source = origin
                 if value is None:

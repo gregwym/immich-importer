@@ -1238,16 +1238,6 @@ SOURCES = [('__init__',
   'timedelta(seconds=offset)).replace(tzinfo=timezone(timedelta(seconds=offset)))\n'
   '\n'
   '\n'
-  'def standard_offset(zone):\n'
-  '    """The zone\'s standard (non-DST) offset, or None for fixed offsets and unknown zones."""\n'
-  "    rule = posix_rule(zone) if zone and not re.fullmatch(r'[+-]\\d{2}:\\d{2}', zone) and zone "
-  "not in ('UTC', 'Z') else None\n"
-  '    if not rule:\n'
-  '        return None\n'
-  '    parsed = PosixZone(rule)\n'
-  '    return timedelta(seconds=parsed.std) if parsed.dst is not None else None\n'
-  '\n'
-  '\n'
   "SHIFT = re.compile(r'^([+-])?(?:(\\d+)d)?(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?$')\n"
   "SHIFT_CLOCK = re.compile(r'^([+-])?(?:(\\d+)d)?(\\d{1,3}):(\\d{2})(?::(\\d{2}))?$')\n"
   "SHIFT_ISO = re.compile(r'^([+-])?P(?:(\\d+)D)?(?:T(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?)?$')\n"
@@ -1280,16 +1270,20 @@ SOURCES = [('__init__',
   '60)\n'
   '\n'
   '\n'
-  'def choose(members, zone, shift=None):\n'
+  'def choose(members, zone, shift=None, clock_zone=None):\n'
   '    """Capture instant for one file or 360 bundle: (datetime or None, source).\n'
   '\n'
   '    What the file states is authoritative, in this order: a zoned date; a bare\n'
   '    EXIF date (respected as written, so None: nothing to deliver); a UTC\n'
-  '    QuickTime clock whose difference from the filename clock proves the offset;\n'
-  '    the filename clock interpreted in the configured timezone. A file that\n'
-  '    states nothing about its timezone and has no configured one is left to\n'
-  '    Immich (None). `shift` corrects a wrong camera clock and is the only way a\n'
-  '    stated wall-clock time is ever changed.\n'
+  '    QuickTime clock, whose difference from the filename clock proves the\n'
+  "    camera's displayed offset; the filename clock interpreted in `clock_zone`\n"
+  "    (the zone the camera's clock was set to) or `zone`. Whenever the instant is\n"
+  '    known, `zone` (where the footage was shot) decides the wall time shown, so\n'
+  '    a camera that kept its home clock while travelling, or never entered DST,\n'
+  '    still lands on the true local time. A file that states nothing about its\n'
+  '    timezone and has no configured one is left to Immich (None). `shift`\n'
+  '    corrects a wrong camera clock and is the only way a stated wall-clock time\n'
+  '    is ever changed.\n'
   '    """\n'
   '    shift = shift or timedelta(0)\n'
   '    dates = [explicit_date(i.time_tags) for i in members]\n'
@@ -1321,29 +1315,32 @@ SOURCES = [('__init__',
   "        return None, 'no camera clock'\n"
   '    if offsets:\n'
   '        offset = offsets.pop()\n'
+  '        stated = (named + shift).replace(tzinfo=timezone(offset))\n'
+  '        if not zone:\n'
+  "            return stated, _shifted('metadata:utc-vs-filename', shift)\n"
+  '        local = from_utc(stated.astimezone(timezone.utc), zone)\n'
+  '        if local.utcoffset() == offset:\n'
+  "            return local, _shifted('metadata:utc-vs-filename', shift)\n"
+  "        # The camera's clock was showing another zone (home time abroad, or no\n"
+  '        # DST): its UTC is right, the configured zone gives the true wall time.\n'
+  "        return local, _shifted('metadata:utc + configured timezone (camera clock showed ' + "
+  "_offset_text(offset) + ')', shift)\n"
+  '    if clock_zone:\n'
+  '        shown = localize(named + shift, clock_zone)\n'
   '        if zone:\n'
-  '            try:\n'
-  '                configured = localize(named + shift, zone)\n'
-  '            except ImportFailure:\n'
-  '                configured = None\n'
-  '            if configured is not None and configured.utcoffset() != offset:\n'
-  '                if offset == standard_offset(zone):\n'
-  '                    # The camera was synced before DST began and never moved its\n'
-  '                    # displayed clock: its UTC stayed correct, the filename clock lags\n'
-  "                    # an hour. Trust the file's UTC and express it in the configured zone.\n"
-  '                    utc = (named + '
-  'shift).replace(tzinfo=timezone(offset)).astimezone(timezone.utc)\n'
-  "                    return from_utc(utc, zone), _shifted('metadata:utc + configured timezone "
-  "(camera clock not adjusted for DST)', shift)\n"
-  '                # A genuinely different offset: the file was shot elsewhere; the file wins.\n'
-  '                return (named + shift).replace(tzinfo=timezone(offset)), '
-  "_shifted('metadata:utc-vs-filename (differs from configured timezone)', shift)\n"
-  '        return (named + shift).replace(tzinfo=timezone(offset)), '
-  "_shifted('metadata:utc-vs-filename', shift)\n"
+  "            return from_utc(shown.astimezone(timezone.utc), zone), _shifted('filename in clock "
+  "timezone + configured timezone', shift)\n"
+  "        return shown, _shifted('filename in clock timezone', shift)\n"
   '    if zone:\n'
   "        return localize(named + shift, zone), _shifted('filename + configured timezone', "
   'shift)\n'
   "    return None, 'no timezone evidence'\n"
+  '\n'
+  '\n'
+  'def _offset_text(offset):\n'
+  '    seconds = int(offset.total_seconds())\n'
+  "    sign = '+' if seconds >= 0 else '-'\n"
+  "    return sign + '%02d:%02d' % (abs(seconds) // 3600, abs(seconds) % 3600 // 60)\n"
   '\n'
   '\n'
   'def _shifted(source, shift):\n'
@@ -1658,6 +1655,8 @@ SOURCES = [('__init__',
   '    expected_user_id: str = ""\n'
   '    capture_timezone: str = ""\n'
   '    clock_shift: str = ""  # Per-run camera clock correction; command line only.\n'
+  '    clock_timezone: str = ""  # Zone the camera\'s clock displayed, when it differs from where '
+  'footage was shot.\n'
   '    verify_timeout: float = 180.0\n'
   '    poll_interval: float = 2.0\n'
   '    request_timeout: float = 300.0\n'
@@ -1715,7 +1714,7 @@ SOURCES = [('__init__',
   '        if key in os.environ:\n'
   '            values[field] = os.environ[key]\n'
   '    for key in ("companion_root", "manifest_root", "api_url", "auth_dir", "verify_timeout", '
-  '"capture_timezone", "clock_shift"):\n'
+  '"capture_timezone", "clock_shift", "clock_timezone"):\n'
   '        value = getattr(args, key, None)\n'
   '        if value is not None:\n'
   '            values[key] = value\n'
@@ -2466,7 +2465,7 @@ SOURCES = [('__init__',
   '                            item.time_tags = {"DateTimeOriginal": side[key]}\n'
   '                            break\n'
   '            value, origin = choose(members, config.capture_timezone, '
-  'parse_shift(config.clock_shift))\n'
+  'parse_shift(config.clock_shift), config.clock_timezone)\n'
   '            for item in members:\n'
   '                item.capture_source = origin\n'
   '                if value is None:\n'
@@ -2834,10 +2833,13 @@ SOURCES = [('__init__',
   '    p.add_argument("--companion-root")\n'
   '    p.add_argument("--manifest-root")\n'
   '    p.add_argument("--api-url")\n'
-  '    p.add_argument("--capture-timezone", help="Fallback shooting timezone: America/Los_Angeles '
-  'or +08:00")\n'
+  '    p.add_argument("--capture-timezone", help="Where the footage was shot (America/Los_Angeles '
+  'or +09:00): decides the wall time shown; also how a camera clock without timezone evidence is '
+  'read")\n'
   '    p.add_argument("--clock-shift", help="Correct a wrong camera clock for this run, e.g. '
   '221d00:34:12 or -1h30m")\n'
+  '    p.add_argument("--clock-timezone", help="Zone the camera clock was displaying when it '
+  'differs from --capture-timezone (e.g. home time while abroad)")\n'
   '    p.add_argument("--auth-dir", help="Directory containing Immich CLI auth.yml")\n'
   '    p.add_argument("--verify-timeout", type=float, help="Metadata polling timeout per asset in '
   'seconds")\n'
@@ -2993,10 +2995,13 @@ SOURCES = [('__init__',
   "    p.add_argument('--time-source', choices=('auto', 'filename'), default='auto',\n"
   "                   help='auto: reliable zoned metadata then filename; filename: explicitly "
   "disregard embedded dates')\n"
-  "    p.add_argument('--capture-timezone', help='Shooting timezone for filename dates, e.g. "
-  "America/Los_Angeles')\n"
+  "    p.add_argument('--capture-timezone', help='Where the footage was shot (America/Los_Angeles "
+  'or +09:00): decides the wall time shown; also how a camera clock without timezone evidence is '
+  "read')\n"
   "    p.add_argument('--clock-shift', help='Camera clock was wrong by this amount: 221d00:34:12, "
   "-1h30m, P221DT34M12S')\n"
+  "    p.add_argument('--clock-timezone', help='Zone the camera clock was displaying when it "
+  "differs from --capture-timezone (e.g. home time while abroad)')\n"
   "    p.add_argument('--only', metavar='GLOB', action='append',\n"
   "                   help='Only file names matching this shell-style pattern (*, ?, [..]); "
   'repeatable, e.g. --only "*.insv" --only "DJI_202601*"\')\n'
@@ -3098,7 +3103,8 @@ SOURCES = [('__init__',
   '        try:\n'
   "            if any(row['status'] == 'failed' for _, row in members):\n"
   "                raise ImportFailure('Bundle member cannot be reviewed')\n"
-  '            value, origin = choose([i for i, _ in members], config.capture_timezone, shift)\n'
+  '            value, origin = choose([i for i, _ in members], config.capture_timezone, shift, '
+  'config.clock_timezone)\n'
   '            for item, row in members:\n'
   "                row['timeSource'] = origin\n"
   '                if value is None:\n'

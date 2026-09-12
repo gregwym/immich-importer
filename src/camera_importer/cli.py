@@ -24,8 +24,9 @@ def parser():
     p.add_argument("--companion-root")
     p.add_argument("--manifest-root")
     p.add_argument("--api-url")
-    p.add_argument("--capture-timezone", help="Fallback shooting timezone: America/Los_Angeles or +08:00")
+    p.add_argument("--capture-timezone", help="Where the footage was shot (America/Los_Angeles or +09:00): decides the wall time shown; also how a camera clock without timezone evidence is read")
     p.add_argument("--clock-shift", help="Correct a wrong camera clock for this run, e.g. 221d00:34:12 or -1h30m")
+    p.add_argument("--clock-timezone", help="Zone the camera clock was displaying when it differs from --capture-timezone (e.g. home time while abroad)")
     p.add_argument("--auth-dir", help="Directory containing Immich CLI auth.yml")
     p.add_argument("--verify-timeout", type=float, help="Metadata polling timeout per asset in seconds")
     return p

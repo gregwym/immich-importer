@@ -27,8 +27,9 @@ def parser():
     mode.add_argument('--dry-run', action='store_true', help='Read-only preview (default); connects to Immich')
     p.add_argument('--time-source', choices=('auto', 'filename'), default='auto',
                    help='auto: reliable zoned metadata then filename; filename: explicitly disregard embedded dates')
-    p.add_argument('--capture-timezone', help='Shooting timezone for filename dates, e.g. America/Los_Angeles')
+    p.add_argument('--capture-timezone', help='Where the footage was shot (America/Los_Angeles or +09:00): decides the wall time shown; also how a camera clock without timezone evidence is read')
     p.add_argument('--clock-shift', help='Camera clock was wrong by this amount: 221d00:34:12, -1h30m, P221DT34M12S')
+    p.add_argument('--clock-timezone', help='Zone the camera clock was displaying when it differs from --capture-timezone (e.g. home time while abroad)')
     p.add_argument('--only', metavar='GLOB', action='append',
                    help='Only file names matching this shell-style pattern (*, ?, [..]); repeatable, e.g. --only "*.insv" --only "DJI_202601*"')
     p.add_argument('--match', choices=('auto', 'checksum'), default='auto',
@@ -119,7 +120,7 @@ def repair(source, config, apply=False, time_source='auto', log=lambda s: None, 
         try:
             if any(row['status'] == 'failed' for _, row in members):
                 raise ImportFailure('Bundle member cannot be reviewed')
-            value, origin = choose([i for i, _ in members], config.capture_timezone, shift)
+            value, origin = choose([i for i, _ in members], config.capture_timezone, shift, config.clock_timezone)
             for item, row in members:
                 row['timeSource'] = origin
                 if value is None:
